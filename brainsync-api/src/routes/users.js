@@ -23,6 +23,53 @@ router.get('/', requireRole('admin'), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// POST /api/users — admin: create a new user (auth + profile row)
+router.post('/', requireRole('admin'), async (req, res, next) => {
+  try {
+    const { email, password, full_name, role } = req.body;
+
+    if (!email || !password || !full_name) {
+      return res.status(400).json({ error: 'email, password, and full_name are required' });
+    }
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+    const validRoles = ['admin', 'staff', 'viewer'];
+    const assignedRole = validRoles.includes(role) ? role : 'staff';
+
+    const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+      user_metadata: { full_name },
+    });
+
+    if (authError) {
+      if (authError.message?.includes('already been registered')) {
+        return res.status(409).json({ error: 'A user with this email already exists' });
+      }
+      throw authError;
+    }
+
+    if (assignedRole !== 'staff') {
+      await supabase
+        .from('users')
+        .update({ role: assignedRole })
+        .eq('auth_id', authData.user.id);
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from('users')
+      .select('id, full_name, email, role, created_at')
+      .eq('auth_id', authData.user.id)
+      .single();
+
+    if (profileError) throw profileError;
+
+    res.status(201).json(profile);
+  } catch (err) { next(err); }
+});
+
 // PATCH /api/users/:id/role — admin: change user role
 router.patch('/:id/role', requireRole('admin'), async (req, res, next) => {
   try {
@@ -41,6 +88,28 @@ router.patch('/:id/role', requireRole('admin'), async (req, res, next) => {
 
     if (error) throw error;
     res.json(data);
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/users/:id — admin: deactivate/remove a user
+router.delete('/:id', requireRole('admin'), async (req, res, next) => {
+  try {
+    const { data: userRow, error: lookupError } = await supabase
+      .from('users')
+      .select('auth_id')
+      .eq('id', req.params.id)
+      .single();
+
+    if (lookupError) throw lookupError;
+
+    if (userRow?.auth_id) {
+      const { error: authDeleteError } = await supabase.auth.admin.deleteUser(userRow.auth_id);
+      if (authDeleteError) throw authDeleteError;
+    }
+
+    await supabase.from('users').delete().eq('id', req.params.id);
+
+    res.status(204).send();
   } catch (err) { next(err); }
 });
 
