@@ -91,7 +91,7 @@ router.patch('/:id/role', requireRole('admin'), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// DELETE /api/users/:id — admin: deactivate/remove a user
+// DELETE /api/users/:id — admin: remove a user's access
 router.delete('/:id', requireRole('admin'), async (req, res, next) => {
   try {
     const { data: userRow, error: lookupError } = await supabase
@@ -102,17 +102,28 @@ router.delete('/:id', requireRole('admin'), async (req, res, next) => {
 
     if (lookupError) throw lookupError;
 
+    // Always remove the profile row — this is what actually gates access
+    // throughout the app (RLS, role checks, etc).
+    const { error: deleteError } = await supabase
+      .from('users')
+      .delete()
+      .eq('id', req.params.id);
+
+    if (deleteError) throw deleteError;
+
+    // Best-effort: also remove the underlying auth identity so they can't
+    // log in at all. If this fails, the profile row is already gone, so
+    // they're effectively locked out regardless — log it, don't fail.
     if (userRow?.auth_id) {
       const { error: authDeleteError } = await supabase.auth.admin.deleteUser(userRow.auth_id);
-      if (authDeleteError) throw authDeleteError;
+      if (authDeleteError) {
+        console.warn(`[users] auth.admin.deleteUser failed for ${userRow.auth_id}:`, authDeleteError.message);
+      }
     }
-
-    await supabase.from('users').delete().eq('id', req.params.id);
 
     res.status(204).send();
   } catch (err) { next(err); }
 });
-
 // POST /api/users/assign — assign staff to a conference
 router.post('/assign', requireRole('admin'), async (req, res, next) => {
   try {
