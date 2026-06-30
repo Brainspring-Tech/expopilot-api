@@ -8,6 +8,7 @@ const conferencesRouter = require('./routes/conferences');
 const leadsRouter       = require('./routes/leads');
 const syncRouter        = require('./routes/sync');
 const assetsRouter      = require('./routes/assets');
+const assetCatalogRouter = require('./routes/asset-catalog');
 const tasksRouter       = require('./routes/tasks');
 const usersRouter       = require('./routes/users');
 
@@ -48,6 +49,7 @@ app.use('/api/conferences', conferencesRouter);
 app.use('/api/leads',       leadsRouter);
 app.use('/api/sync',        syncRouter);
 app.use('/api/assets',      assetsRouter);
+app.use('/api/asset-catalog', assetCatalogRouter);
 app.use('/api/tasks',       tasksRouter);
 app.use('/api/users',       usersRouter);
 
