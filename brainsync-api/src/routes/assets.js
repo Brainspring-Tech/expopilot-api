@@ -26,14 +26,45 @@ router.get('/', async (req, res, next) => {
 // POST /api/assets
 router.post('/', async (req, res, next) => {
   try {
-    const { conference_id, name, category, quantity, ship_by_date, return_by_date, notes } = req.body;
-    if (!conference_id || !name) {
+    const { conference_id, catalog_id, name, category, quantity, ship_by_date, return_by_date, notes } = req.body;
+
+    let resolvedName = name;
+    let resolvedCategory = category;
+    let resolvedNotes = notes;
+
+    if (catalog_id) {
+      const { data: catalogItem, error: catalogError } = await supabase
+        .from('asset_catalog')
+        .select('name, category, default_notes')
+        .eq('id', catalog_id)
+        .single();
+
+      if (catalogError || !catalogItem) {
+        return res.status(400).json({ error: 'catalog_id does not match any asset in the catalog' });
+      }
+
+      // Catalog is the source of truth for name/category/notes when an item is selected
+      resolvedName = catalogItem.name;
+      resolvedCategory = catalogItem.category;
+      resolvedNotes = notes || catalogItem.default_notes;
+    }
+
+    if (!conference_id || !resolvedName) {
       return res.status(400).json({ error: 'conference_id and name are required' });
     }
 
     const { data, error } = await supabase
       .from('booth_assets')
-      .insert({ conference_id, name, category, quantity: quantity || 1, ship_by_date, return_by_date, notes })
+      .insert({
+        conference_id,
+        catalog_id: catalog_id || null,
+        name: resolvedName,
+        category: resolvedCategory,
+        quantity: quantity || 1,
+        ship_by_date,
+        return_by_date,
+        notes: resolvedNotes,
+      })
       .select()
       .single();
 
