@@ -32,7 +32,7 @@ router.get('/roi', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// GET /api/conferences/:id — single conference with staff + asset counts
+// GET /api/conferences/:id — single conference with staff + asset counts + attachments
 router.get('/:id', async (req, res, next) => {
   try {
     const { data, error } = await req.userClient
@@ -42,7 +42,8 @@ router.get('/:id', async (req, res, next) => {
         staff_assignments ( id, role, user_id, users(full_name, email) ),
         booth_assets ( id, name, category, status, quantity ),
         tasks ( id, title, phase, status, due_date ),
-        conference_budgets ( category, budgeted, actual )
+        conference_budgets ( category, budgeted, actual ),
+        conference_attachments ( id, file_name, file_url, file_type, file_size, created_at, users(full_name) )
       `)
       .eq('id', req.params.id)
       .single();
@@ -56,14 +57,14 @@ router.get('/:id', async (req, res, next) => {
 // POST /api/conferences — admin only
 router.post('/', requireRole('admin'), async (req, res, next) => {
   try {
-    const { name, venue, city, state, start_date, end_date, budget, notes } = req.body;
+    const { name, venue, city, state, start_date, end_date, budget, notes, website_url } = req.body;
     if (!name || !start_date || !end_date) {
       return res.status(400).json({ error: 'name, start_date, and end_date are required' });
     }
 
     const { data, error } = await supabase
       .from('conferences')
-      .insert({ name, venue, city, state, start_date, end_date, budget, notes, created_by: req.user.id })
+      .insert({ name, venue, city, state, start_date, end_date, budget, notes, website_url, created_by: req.user.id })
       .select()
       .single();
 
@@ -75,7 +76,7 @@ router.post('/', requireRole('admin'), async (req, res, next) => {
 // PATCH /api/conferences/:id — admin only
 router.patch('/:id', requireRole('admin'), async (req, res, next) => {
   try {
-    const allowed = ['name','venue','city','state','start_date','end_date','budget','status','notes','hubspot_deal_id'];
+    const allowed = ['name','venue','city','state','start_date','end_date','budget','status','notes','hubspot_deal_id','website_url'];
     const updates = Object.fromEntries(
       Object.entries(req.body).filter(([k]) => allowed.includes(k))
     );
@@ -108,7 +109,7 @@ router.delete('/:id', requireRole('admin'), async (req, res, next) => {
 // POST /api/conferences/:id/budget — upsert budget line items
 router.post('/:id/budget', requireRole('admin'), async (req, res, next) => {
   try {
-    const { items } = req.body; // [{ category, budgeted, actual, notes }]
+    const { items } = req.body;
     if (!Array.isArray(items)) {
       return res.status(400).json({ error: 'items must be an array' });
     }
@@ -121,6 +122,59 @@ router.post('/:id/budget', requireRole('admin'), async (req, res, next) => {
 
     if (error) throw error;
     res.json(data);
+  } catch (err) { next(err); }
+});
+
+// ── Attachments ──────────────────────────────────────────────
+
+// GET /api/conferences/:id/attachments
+router.get('/:id/attachments', async (req, res, next) => {
+  try {
+    const { data, error } = await req.userClient
+      .from('conference_attachments')
+      .select('*, users(full_name)')
+      .eq('conference_id', req.params.id)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
+// POST /api/conferences/:id/attachments — add a link (or record after direct upload)
+router.post('/:id/attachments', requireRole('admin'), async (req, res, next) => {
+  try {
+    const { file_name, file_url, file_type, file_size } = req.body;
+    if (!file_name || !file_url) {
+      return res.status(400).json({ error: 'file_name and file_url are required' });
+    }
+
+    const { data, error } = await supabase
+      .from('conference_attachments')
+      .insert({
+        conference_id: req.params.id,
+        file_name, file_url, file_type, file_size,
+        uploaded_by: req.user.id,
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.status(201).json(data);
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/conferences/:id/attachments/:attachmentId
+router.delete('/:id/attachments/:attachmentId', requireRole('admin'), async (req, res, next) => {
+  try {
+    const { error } = await supabase
+      .from('conference_attachments')
+      .delete()
+      .eq('id', req.params.attachmentId)
+      .eq('conference_id', req.params.id);
+
+    if (error) throw error;
+    res.status(204).send();
   } catch (err) { next(err); }
 });
 
