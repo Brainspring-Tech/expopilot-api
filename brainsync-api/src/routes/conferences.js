@@ -178,4 +178,78 @@ router.delete('/:id/attachments/:attachmentId', requireRole('admin'), async (req
   } catch (err) { next(err); }
 });
 
+// ── Expenses ─────────────────────────────────────────────────
+
+// GET /api/conferences/:id/expenses
+router.get('/:id/expenses', async (req, res, next) => {
+  try {
+    const { data, error } = await req.userClient
+      .from('conference_expenses')
+      .select('*, users(full_name)')
+      .eq('conference_id', req.params.id)
+      .order('expense_date', { ascending: false });
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
+// POST /api/conferences/:id/expenses
+router.post('/:id/expenses', requireRole('admin', 'staff'), async (req, res, next) => {
+  try {
+    const { category, amount, expense_date, notes } = req.body;
+    if (!category || amount === undefined) {
+      return res.status(400).json({ error: 'category and amount are required' });
+    }
+
+    const { data, error } = await supabase
+      .from('conference_expenses')
+      .insert({
+        conference_id: req.params.id,
+        category, amount, expense_date, notes,
+        created_by: req.user.id,
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.status(201).json(data);
+  } catch (err) { next(err); }
+});
+
+// PATCH /api/conferences/:id/expenses/:expenseId
+router.patch('/:id/expenses/:expenseId', requireRole('admin', 'staff'), async (req, res, next) => {
+  try {
+    const allowed = ['category', 'amount', 'expense_date', 'notes'];
+    const updates = Object.fromEntries(
+      Object.entries(req.body).filter(([k]) => allowed.includes(k))
+    );
+
+    const { data, error } = await supabase
+      .from('conference_expenses')
+      .update(updates)
+      .eq('id', req.params.expenseId)
+      .eq('conference_id', req.params.id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/conferences/:id/expenses/:expenseId
+router.delete('/:id/expenses/:expenseId', requireRole('admin', 'staff'), async (req, res, next) => {
+  try {
+    const { error } = await supabase
+      .from('conference_expenses')
+      .delete()
+      .eq('id', req.params.expenseId)
+      .eq('conference_id', req.params.id);
+
+    if (error) throw error;
+    res.status(204).send();
+  } catch (err) { next(err); }
+});
+
 module.exports = router;
