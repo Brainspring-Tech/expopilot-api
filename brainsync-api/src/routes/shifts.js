@@ -1,6 +1,5 @@
 const express  = require('express');
 const router   = express.Router();
-const supabase = require('../services/supabase');
 const { requireAuth, requireRole } = require('../middleware/auth');
 
 router.use(requireAuth);
@@ -23,7 +22,11 @@ router.get('/', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/shifts — admin only
+// POST /api/shifts — admin only. Switched both the assignment lookup
+// and the insert to req.userClient. Previously, both used the
+// service-role client with no organization check — an admin could
+// reference a conference_id/user_id pair from another org entirely and
+// the assignment-lookup guard below wouldn't have caught it.
 router.post('/', requireRole('admin'), async (req, res, next) => {
   try {
     const { conference_id, user_id, shift_date, start_time, end_time, notes } = req.body;
@@ -35,7 +38,7 @@ router.post('/', requireRole('admin'), async (req, res, next) => {
     }
 
     // A shift can only be scheduled for someone already assigned to the conference
-    const { data: assignment, error: assignmentError } = await supabase
+    const { data: assignment, error: assignmentError } = await req.userClient
       .from('staff_assignments')
       .select('id')
       .eq('conference_id', conference_id)
@@ -47,7 +50,7 @@ router.post('/', requireRole('admin'), async (req, res, next) => {
       return res.status(400).json({ error: 'This person is not assigned to this conference yet' });
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await req.userClient
       .from('staff_shifts')
       .insert({ conference_id, user_id, shift_date, start_time, end_time, notes, created_by: req.user.id })
       .select('*, users!staff_shifts_user_id_fkey(full_name)')
@@ -58,7 +61,8 @@ router.post('/', requireRole('admin'), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PATCH /api/shifts/:id — admin only
+// PATCH /api/shifts/:id — admin only. Switched to req.userClient so
+// this can only affect a shift in the caller's org.
 router.patch('/:id', requireRole('admin'), async (req, res, next) => {
   try {
     const allowed = ['shift_date', 'start_time', 'end_time', 'notes'];
@@ -70,22 +74,24 @@ router.patch('/:id', requireRole('admin'), async (req, res, next) => {
       return res.status(400).json({ error: 'end_time must be after start_time' });
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await req.userClient
       .from('staff_shifts')
       .update(updates)
       .eq('id', req.params.id)
       .select('*, users!staff_shifts_user_id_fkey(full_name)')
-      .single();
+      .maybeSingle();
 
     if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'Shift not found' });
     res.json(data);
   } catch (err) { next(err); }
 });
 
-// DELETE /api/shifts/:id — admin only
+// DELETE /api/shifts/:id — admin only. Switched to req.userClient so
+// this can only affect a shift in the caller's org.
 router.delete('/:id', requireRole('admin'), async (req, res, next) => {
   try {
-    const { error } = await supabase.from('staff_shifts').delete().eq('id', req.params.id);
+    const { error } = await req.userClient.from('staff_shifts').delete().eq('id', req.params.id);
     if (error) throw error;
     res.status(204).send();
   } catch (err) { next(err); }
