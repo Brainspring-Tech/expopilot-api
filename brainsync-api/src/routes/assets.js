@@ -1,6 +1,5 @@
 const express  = require('express');
 const router   = express.Router();
-const supabase = require('../services/supabase');
 const { requireAuth, requireRole } = require('../middleware/auth');
 
 router.use(requireAuth);
@@ -23,7 +22,11 @@ router.get('/', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/assets
+// POST /api/assets — switched catalog lookup and insert to req.userClient.
+// Previously used the service-role client for both: the catalog lookup
+// had no organization check at all (could pull another org's catalog
+// item's name/category/notes into your asset), and the insert had no
+// check that conference_id belonged to the caller's org.
 router.post('/', async (req, res, next) => {
   try {
     const { conference_id, catalog_id, name, category, quantity, ship_by_date, return_by_date,
@@ -34,13 +37,14 @@ router.post('/', async (req, res, next) => {
     let resolvedNotes = notes;
 
     if (catalog_id) {
-      const { data: catalogItem, error: catalogError } = await supabase
+      const { data: catalogItem, error: catalogError } = await req.userClient
         .from('asset_catalog')
         .select('name, category, default_notes')
         .eq('id', catalog_id)
-        .single();
+        .maybeSingle();
 
-      if (catalogError || !catalogItem) {
+      if (catalogError) throw catalogError;
+      if (!catalogItem) {
         return res.status(400).json({ error: 'catalog_id does not match any asset in the catalog' });
       }
 
@@ -54,7 +58,7 @@ router.post('/', async (req, res, next) => {
       return res.status(400).json({ error: 'conference_id and name are required' });
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await req.userClient
       .from('booth_assets')
       .insert({
         conference_id,
@@ -78,7 +82,8 @@ router.post('/', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PATCH /api/assets/:id — update status, tracking, etc.
+// PATCH /api/assets/:id — update status, tracking, etc. Switched to
+// req.userClient so this can only affect an asset in the caller's org.
 router.patch('/:id', async (req, res, next) => {
   try {
     const allowed = ['name','category','quantity','status','shipping_carrier','tracking_number',
@@ -87,22 +92,24 @@ router.patch('/:id', async (req, res, next) => {
       Object.entries(req.body).filter(([k]) => allowed.includes(k))
     );
 
-    const { data, error } = await supabase
+    const { data, error } = await req.userClient
       .from('booth_assets')
       .update(updates)
       .eq('id', req.params.id)
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'Asset not found' });
     res.json(data);
   } catch (err) { next(err); }
 });
 
-// DELETE /api/assets/:id — admin only
+// DELETE /api/assets/:id — admin only. Switched to req.userClient so
+// this can only affect an asset in the caller's org.
 router.delete('/:id', requireRole('admin'), async (req, res, next) => {
   try {
-    const { error } = await supabase.from('booth_assets').delete().eq('id', req.params.id);
+    const { error } = await req.userClient.from('booth_assets').delete().eq('id', req.params.id);
     if (error) throw error;
     res.status(204).send();
   } catch (err) { next(err); }
