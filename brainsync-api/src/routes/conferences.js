@@ -39,7 +39,9 @@ router.get('/:id', async (req, res, next) => {
       .from('conferences')
       .select(`
         *,
-        staff_assignments ( id, role, user_id, users(full_name, email) ),
+        staff_assignments ( id, role, user_id, arrival_date, departure_date, arrival_flight,
+                             departure_flight, hotel_name, hotel_confirmation, travel_notes,
+                             users(full_name, email) ),
         booth_assets ( id, name, category, status, quantity ),
         tasks ( id, title, phase, status, due_date ),
         conference_budgets ( category, budgeted, actual ),

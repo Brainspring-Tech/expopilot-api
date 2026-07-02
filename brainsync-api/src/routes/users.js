@@ -159,4 +159,27 @@ router.delete('/assign', requireRole('admin'), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// PATCH /api/users/assign/:id — update travel/lodging info for an existing
+// staff assignment. Kept separate from POST /assign (which upserts role)
+// so saving travel details never accidentally resets someone's role.
+router.patch('/assign/:id', requireRole('admin'), async (req, res, next) => {
+  try {
+    const allowed = ['arrival_date', 'departure_date', 'arrival_flight', 'departure_flight',
+                      'hotel_name', 'hotel_confirmation', 'travel_notes'];
+    const updates = Object.fromEntries(
+      Object.entries(req.body).filter(([k]) => allowed.includes(k))
+    );
+
+    const { data, error } = await supabase
+      .from('staff_assignments')
+      .update(updates)
+      .eq('id', req.params.id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
 module.exports = router;

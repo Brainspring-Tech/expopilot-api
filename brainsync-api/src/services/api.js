@@ -65,10 +65,6 @@ export const api = {
     addExpense:       (id, d) => apiFetch(`/api/conferences/${id}/expenses`, { method:'POST', body:JSON.stringify(d) }),
     updateExpense:    (id, expenseId, d) => apiFetch(`/api/conferences/${id}/expenses/${expenseId}`, { method:'PATCH', body:JSON.stringify(d) }),
     deleteExpense:    (id, expenseId) => apiFetch(`/api/conferences/${id}/expenses/${expenseId}`, { method:'DELETE' }),
-    listExpenses:     (id)    => apiFetch(`/api/conferences/${id}/expenses`),
-    addExpense:       (id, d) => apiFetch(`/api/conferences/${id}/expenses`, { method:'POST', body:JSON.stringify(d) }),
-    updateExpense:    (id, expenseId, d) => apiFetch(`/api/conferences/${id}/expenses/${expenseId}`, { method:'PATCH', body:JSON.stringify(d) }),
-    deleteExpense:    (id, expenseId) => apiFetch(`/api/conferences/${id}/expenses/${expenseId}`, { method:'DELETE' }),
   },
   leads: {
     list:   (params={}) => {
@@ -109,18 +105,12 @@ export const api = {
     delete: (id)     => apiFetch(`/api/users/${id}`, { method:'DELETE' }),
     assign: (d)      => apiFetch('/api/users/assign', { method:'POST', body:JSON.stringify(d) }),
     unassign: (d)    => apiFetch('/api/users/assign', { method:'DELETE', body:JSON.stringify(d) }),
+    // Updates travel/lodging fields on an existing staff assignment (by its
+    // own id) — kept separate from assign() so it never touches role.
+    updateAssignment: (id, d) => apiFetch(`/api/users/assign/${id}`, { method:'PATCH', body:JSON.stringify(d) }),
   },
   sync: {
     status: ()       => apiFetch('/api/sync/status'),
     run:    ()       => apiFetch('/api/sync/run', { method:'POST' }),
-  },
-  vision: {
-    // image: base64 string (no data: prefix), mediaType: e.g. 'image/jpeg'
-    // Calls our own API, which holds the Anthropic key server-side —
-    // the key never ships in the PWA bundle.
-    businessCard: (image, mediaType) => apiFetch('/api/vision/business-card', {
-      method: 'POST',
-      body: JSON.stringify({ image, mediaType }),
-    }),
   },
 };
