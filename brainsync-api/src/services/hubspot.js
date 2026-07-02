@@ -115,7 +115,6 @@ function buildContactProperties(lead) {
     brainsync_grade_levels:  (lead.grade_levels  || []).join('; '),
     brainsync_lead_score:    String(lead.score   || ''),
     brainsync_notes:         lead.notes          || '',
-    lead_source:             'Conference',
   };
 }
 

@@ -65,6 +65,10 @@ export const api = {
     addExpense:       (id, d) => apiFetch(`/api/conferences/${id}/expenses`, { method:'POST', body:JSON.stringify(d) }),
     updateExpense:    (id, expenseId, d) => apiFetch(`/api/conferences/${id}/expenses/${expenseId}`, { method:'PATCH', body:JSON.stringify(d) }),
     deleteExpense:    (id, expenseId) => apiFetch(`/api/conferences/${id}/expenses/${expenseId}`, { method:'DELETE' }),
+    listExpenses:     (id)    => apiFetch(`/api/conferences/${id}/expenses`),
+    addExpense:       (id, d) => apiFetch(`/api/conferences/${id}/expenses`, { method:'POST', body:JSON.stringify(d) }),
+    updateExpense:    (id, expenseId, d) => apiFetch(`/api/conferences/${id}/expenses/${expenseId}`, { method:'PATCH', body:JSON.stringify(d) }),
+    deleteExpense:    (id, expenseId) => apiFetch(`/api/conferences/${id}/expenses/${expenseId}`, { method:'DELETE' }),
   },
   leads: {
     list:   (params={}) => {
