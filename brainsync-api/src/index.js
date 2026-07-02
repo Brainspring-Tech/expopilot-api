@@ -12,6 +12,7 @@ const assetCatalogRouter = require('./routes/asset-catalog');
 const tasksRouter       = require('./routes/tasks');
 const usersRouter       = require('./routes/users');
 const visionRouter      = require('./routes/vision');
+const shiftsRouter      = require('./routes/shifts');
 
 const { startSyncJob } = require('./jobs/hubspotSync');
 
@@ -54,6 +55,7 @@ app.use('/api/asset-catalog', assetCatalogRouter);
 app.use('/api/tasks',       tasksRouter);
 app.use('/api/users',       usersRouter);
 app.use('/api/vision',      visionRouter);
+app.use('/api/shifts',      shiftsRouter);
 
 // ── 404 handler ──────────────────────────────────────────────
 app.use((req, res) => {
