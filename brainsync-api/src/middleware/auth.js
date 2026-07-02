@@ -32,16 +32,18 @@ async function requireAuth(req, res, next) {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
 
-  // Pull role from public.users
+  // Pull role AND organization from public.users — organization_id is
+  // required everywhere now that the app is multi-tenant, so it needs
+  // to be on req.user alongside role.
   const { data: profile } = await verifier
     .from('users')
-    .select('id, full_name, email, role')
+    .select('id, full_name, email, role, organization_id')
     .eq('auth_id', user.id)
     .single();
 
   req.user      = profile || { auth_id: user.id, email: user.email, role: 'staff' };
   req.token     = token;
-  req.userClient = getUserClient(token);  // RLS-scoped client for reads
+  req.userClient = getUserClient(token);  // RLS-scoped client for reads AND writes
   next();
 }
 

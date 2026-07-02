@@ -10,10 +10,13 @@ router.get('/me', async (req, res) => {
   res.json(req.user);
 });
 
-// GET /api/users — admin: list all staff
+// GET /api/users — admin: list all staff in the caller's organization.
+// Switched to req.userClient so RLS ("users: admin read all") scopes
+// this to the caller's own org — previously used the service-role
+// client and returned every user across every organization.
 router.get('/', requireRole('admin'), async (req, res, next) => {
   try {
-    const { data, error } = await supabase
+    const { data, error } = await req.userClient
       .from('users')
       .select('id, full_name, email, role, created_at')
       .order('full_name');
@@ -23,7 +26,8 @@ router.get('/', requireRole('admin'), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/users — admin: create a new user (auth + profile row)
+// POST /api/users — admin: create a new user (auth + profile row) in
+// the caller's organization.
 router.post('/', requireRole('admin'), async (req, res, next) => {
   try {
     const { email, password, full_name, role } = req.body;
@@ -37,11 +41,15 @@ router.post('/', requireRole('admin'), async (req, res, next) => {
     const validRoles = ['admin', 'staff', 'viewer'];
     const assignedRole = validRoles.includes(role) ? role : 'staff';
 
+    // The handle_new_user() trigger reads organization_id from this
+    // metadata to set it on the new profile row — the new user inherits
+    // the creating admin's organization. Without this, the trigger's
+    // insert into public.users fails (organization_id is NOT NULL).
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({
       email,
       password,
       email_confirm: true,
-      user_metadata: { full_name },
+      user_metadata: { full_name, organization_id: req.user.organization_id },
     });
 
     if (authError) {
@@ -70,7 +78,9 @@ router.post('/', requireRole('admin'), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PATCH /api/users/:id/role — admin: change user role
+// PATCH /api/users/:id/role — admin: change a role. Switched to
+// req.userClient so RLS ("users: admin write") only allows this to
+// affect a user in the caller's own organization.
 router.patch('/:id/role', requireRole('admin'), async (req, res, next) => {
   try {
     const { role } = req.body;
@@ -79,32 +89,37 @@ router.patch('/:id/role', requireRole('admin'), async (req, res, next) => {
       return res.status(400).json({ error: `role must be one of: ${valid.join(', ')}` });
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await req.userClient
       .from('users')
       .update({ role })
       .eq('id', req.params.id)
       .select('id, full_name, email, role')
-      .single();
+      .maybeSingle();
 
     if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'User not found' });
     res.json(data);
   } catch (err) { next(err); }
 });
 
-// DELETE /api/users/:id — admin: remove a user's access
+// DELETE /api/users/:id — admin: remove a user's access. Switched to
+// req.userClient so this can only ever target a user in the caller's
+// own organization — previously used the service-role client with no
+// organization check at all.
 router.delete('/:id', requireRole('admin'), async (req, res, next) => {
   try {
-    const { data: userRow, error: lookupError } = await supabase
+    const { data: userRow, error: lookupError } = await req.userClient
       .from('users')
       .select('auth_id')
       .eq('id', req.params.id)
-      .single();
+      .maybeSingle();
 
     if (lookupError) throw lookupError;
+    if (!userRow) return res.status(404).json({ error: 'User not found' });
 
     // Always remove the profile row — this is what actually gates access
     // throughout the app (RLS, role checks, etc).
-    const { error: deleteError } = await supabase
+    const { error: deleteError } = await req.userClient
       .from('users')
       .delete()
       .eq('id', req.params.id);
@@ -124,7 +139,12 @@ router.delete('/:id', requireRole('admin'), async (req, res, next) => {
     res.status(204).send();
   } catch (err) { next(err); }
 });
-// POST /api/users/assign — assign staff to a conference
+
+// POST /api/users/assign — assign staff to a conference. Both the
+// conference and the target user must belong to the caller's org.
+// RLS on staff_assignments already constrains conference_id to the
+// caller's org, but doesn't check the assigned user's org — so we
+// verify that explicitly here before allowing the assignment.
 router.post('/assign', requireRole('admin'), async (req, res, next) => {
   try {
     const { conference_id, user_id, role, shift_notes } = req.body;
@@ -132,7 +152,18 @@ router.post('/assign', requireRole('admin'), async (req, res, next) => {
       return res.status(400).json({ error: 'conference_id and user_id are required' });
     }
 
-    const { data, error } = await supabase
+    const { data: targetUser, error: targetUserError } = await req.userClient
+      .from('users')
+      .select('id')
+      .eq('id', user_id)
+      .maybeSingle();
+
+    if (targetUserError) throw targetUserError;
+    if (!targetUser) {
+      return res.status(400).json({ error: 'That user is not in your organization' });
+    }
+
+    const { data, error } = await req.userClient
       .from('staff_assignments')
       .upsert({ conference_id, user_id, role: role || 'booth staff', shift_notes },
                { onConflict: 'conference_id,user_id' })
@@ -144,11 +175,12 @@ router.post('/assign', requireRole('admin'), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// DELETE /api/users/assign — remove staff from conference
+// DELETE /api/users/assign — remove staff from conference. Switched to
+// req.userClient so RLS constrains this to the caller's own org.
 router.delete('/assign', requireRole('admin'), async (req, res, next) => {
   try {
     const { conference_id, user_id } = req.body;
-    const { error } = await supabase
+    const { error } = await req.userClient
       .from('staff_assignments')
       .delete()
       .eq('conference_id', conference_id)
@@ -159,9 +191,9 @@ router.delete('/assign', requireRole('admin'), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PATCH /api/users/assign/:id — update travel/lodging info for an existing
-// staff assignment. Kept separate from POST /assign (which upserts role)
-// so saving travel details never accidentally resets someone's role.
+// PATCH /api/users/assign/:id — update travel/lodging info. Switched to
+// req.userClient so RLS constrains this to assignments belonging to
+// conferences in the caller's own org.
 router.patch('/assign/:id', requireRole('admin'), async (req, res, next) => {
   try {
     const allowed = ['arrival_date', 'departure_date', 'arrival_flight', 'departure_flight',
@@ -170,14 +202,15 @@ router.patch('/assign/:id', requireRole('admin'), async (req, res, next) => {
       Object.entries(req.body).filter(([k]) => allowed.includes(k))
     );
 
-    const { data, error } = await supabase
+    const { data, error } = await req.userClient
       .from('staff_assignments')
       .update(updates)
       .eq('id', req.params.id)
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'Staff assignment not found' });
     res.json(data);
   } catch (err) { next(err); }
 });
