@@ -10,7 +10,7 @@ router.get('/', async (req, res, next) => {
   try {
     let query = req.userClient
       .from('staff_shifts')
-      .select('*, users(full_name)')
+      .select('*, users!staff_shifts_user_id_fkey(full_name)')
       .order('shift_date', { ascending: true })
       .order('start_time', { ascending: true });
 
@@ -50,7 +50,7 @@ router.post('/', requireRole('admin'), async (req, res, next) => {
     const { data, error } = await supabase
       .from('staff_shifts')
       .insert({ conference_id, user_id, shift_date, start_time, end_time, notes, created_by: req.user.id })
-      .select('*, users(full_name)')
+      .select('*, users!staff_shifts_user_id_fkey(full_name)')
       .single();
 
     if (error) throw error;
@@ -74,7 +74,7 @@ router.patch('/:id', requireRole('admin'), async (req, res, next) => {
       .from('staff_shifts')
       .update(updates)
       .eq('id', req.params.id)
-      .select('*, users(full_name)')
+      .select('*, users!staff_shifts_user_id_fkey(full_name)')
       .single();
 
     if (error) throw error;
