@@ -1,6 +1,5 @@
 const express  = require('express');
 const router   = express.Router();
-const supabase = require('../services/supabase');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { queueHubSpotSync } = require('../services/hubspot');
 
@@ -47,7 +46,11 @@ router.get('/:id', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/leads — single lead capture (online)
+// POST /api/leads — single lead capture (online). Switched to
+// req.userClient so RLS ("leads: staff capture" / "leads: admin all")
+// enforces that conference_id actually belongs to the caller's org
+// (and, for staff, that they're assigned to it) — previously used the
+// service-role client with no check at all.
 router.post('/', async (req, res, next) => {
   try {
     const lead = buildLeadPayload(req.body, req.user.id);
@@ -55,7 +58,18 @@ router.post('/', async (req, res, next) => {
       return res.status(400).json({ error: 'conference_id is required' });
     }
 
-    const { data, error } = await supabase
+    // Friendlier error than a raw RLS violation if the conference
+    // doesn't exist or isn't in the caller's organization at all.
+    const { data: conf, error: confError } = await req.userClient
+      .from('conferences')
+      .select('id')
+      .eq('id', lead.conference_id)
+      .maybeSingle();
+
+    if (confError) throw confError;
+    if (!conf) return res.status(400).json({ error: 'Conference not found' });
+
+    const { data, error } = await req.userClient
       .from('leads')
       .insert(lead)
       .select()
@@ -70,7 +84,11 @@ router.post('/', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/leads/batch — offline batch upload from PWA
+// POST /api/leads/batch — offline batch upload from PWA. Switched to
+// req.userClient — RLS enforces each row's conference_id the same way
+// as a single capture; if any row in the batch targets a conference
+// outside the caller's org or assignment, the whole batch insert fails
+// atomically rather than partially succeeding.
 router.post('/batch', async (req, res, next) => {
   try {
     const { leads } = req.body;
@@ -83,7 +101,7 @@ router.post('/batch', async (req, res, next) => {
 
     const rows = leads.map(l => buildLeadPayload(l, req.user.id));
 
-    const { data, error } = await supabase
+    const { data, error } = await req.userClient
       .from('leads')
       .insert(rows)
       .select('id');
@@ -97,7 +115,11 @@ router.post('/batch', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PATCH /api/leads/:id — update score, notes, tags
+// PATCH /api/leads/:id — update score, notes, tags. Switched to
+// req.userClient so this can only affect a lead the caller can actually
+// see under RLS (their org, and for staff, only leads they captured) —
+// previously used the service-role client with no check at all, meaning
+// any staff member could edit any lead across any conference or org.
 router.patch('/:id', async (req, res, next) => {
   try {
     const allowed = ['first_name','last_name','email','phone','organization','title',
@@ -106,23 +128,35 @@ router.patch('/:id', async (req, res, next) => {
       Object.entries(req.body).filter(([k]) => allowed.includes(k))
     );
 
-    const { data, error } = await supabase
+    const { data, error } = await req.userClient
       .from('leads')
       .update(updates)
       .eq('id', req.params.id)
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'Lead not found' });
     res.json(data);
   } catch (err) { next(err); }
 });
 
-// POST /api/leads/:id/interactions — log a touchpoint
+// POST /api/leads/:id/interactions — log a touchpoint. Switched to
+// req.userClient with an explicit lead-existence check first, so a
+// cross-tenant lead id returns a clean 404 instead of a raw RLS error.
 router.post('/:id/interactions', async (req, res, next) => {
   try {
+    const { data: lead, error: leadError } = await req.userClient
+      .from('leads')
+      .select('id')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (leadError) throw leadError;
+    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+
     const { interaction_type, notes } = req.body;
-    const { data, error } = await supabase
+    const { data, error } = await req.userClient
       .from('interactions')
       .insert({
         lead_id: req.params.id,
@@ -138,13 +172,23 @@ router.post('/:id/interactions', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/leads/:id/follow-ups — create a follow-up task
+// POST /api/leads/:id/follow-ups — create a follow-up task. Same
+// pattern as interactions above.
 router.post('/:id/follow-ups', async (req, res, next) => {
   try {
+    const { data: lead, error: leadError } = await req.userClient
+      .from('leads')
+      .select('id')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (leadError) throw leadError;
+    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+
     const { action, assigned_to, due_date, notes } = req.body;
     if (!action) return res.status(400).json({ error: 'action is required' });
 
-    const { data, error } = await supabase
+    const { data, error } = await req.userClient
       .from('follow_up_tasks')
       .insert({
         lead_id: req.params.id,
