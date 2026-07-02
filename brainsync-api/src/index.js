@@ -11,6 +11,7 @@ const assetsRouter      = require('./routes/assets');
 const assetCatalogRouter = require('./routes/asset-catalog');
 const tasksRouter       = require('./routes/tasks');
 const usersRouter       = require('./routes/users');
+const visionRouter      = require('./routes/vision');
 
 const { startSyncJob } = require('./jobs/hubspotSync');
 
@@ -37,7 +38,7 @@ app.use(rateLimit({
   legacyHeaders: false,
 }));
 
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '8mb' }));
 
 // ── Health check (no auth required) ─────────────────────────
 app.get('/health', (req, res) => {
@@ -52,6 +53,7 @@ app.use('/api/assets',      assetsRouter);
 app.use('/api/asset-catalog', assetCatalogRouter);
 app.use('/api/tasks',       tasksRouter);
 app.use('/api/users',       usersRouter);
+app.use('/api/vision',      visionRouter);
 
 // ── 404 handler ──────────────────────────────────────────────
 app.use((req, res) => {
