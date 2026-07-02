@@ -26,7 +26,8 @@ router.get('/', async (req, res, next) => {
 // POST /api/assets
 router.post('/', async (req, res, next) => {
   try {
-    const { conference_id, catalog_id, name, category, quantity, ship_by_date, return_by_date, notes } = req.body;
+    const { conference_id, catalog_id, name, category, quantity, ship_by_date, return_by_date,
+            shipping_carrier, tracking_number, return_carrier, return_tracking_number, notes } = req.body;
 
     let resolvedName = name;
     let resolvedCategory = category;
@@ -63,6 +64,10 @@ router.post('/', async (req, res, next) => {
         quantity: quantity || 1,
         ship_by_date,
         return_by_date,
+        shipping_carrier: shipping_carrier || null,
+        tracking_number: tracking_number || null,
+        return_carrier: return_carrier || null,
+        return_tracking_number: return_tracking_number || null,
         notes: resolvedNotes,
       })
       .select()
@@ -77,7 +82,7 @@ router.post('/', async (req, res, next) => {
 router.patch('/:id', async (req, res, next) => {
   try {
     const allowed = ['name','category','quantity','status','shipping_carrier','tracking_number',
-                     'ship_by_date','return_by_date','notes'];
+                     'return_carrier','return_tracking_number','ship_by_date','return_by_date','notes'];
     const updates = Object.fromEntries(
       Object.entries(req.body).filter(([k]) => allowed.includes(k))
     );

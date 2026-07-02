@@ -114,4 +114,13 @@ export const api = {
     status: ()       => apiFetch('/api/sync/status'),
     run:    ()       => apiFetch('/api/sync/run', { method:'POST' }),
   },
+  vision: {
+    // image: base64 string (no data: prefix), mediaType: e.g. 'image/jpeg'
+    // Calls our own API, which holds the Anthropic key server-side —
+    // the key never ships in the PWA bundle.
+    businessCard: (image, mediaType) => apiFetch('/api/vision/business-card', {
+      method: 'POST',
+      body: JSON.stringify({ image, mediaType }),
+    }),
+  },
 };
