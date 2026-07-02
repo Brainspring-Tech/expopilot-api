@@ -1,6 +1,5 @@
 const express = require('express');
 const router  = express.Router();
-const supabase = require('../services/supabase');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const PDFDocument = require('pdfkit');
 
@@ -40,7 +39,9 @@ router.get('/:id', async (req, res, next) => {
       .from('conferences')
       .select(`
         *,
-        staff_assignments ( id, role, user_id, users(full_name, email) ),
+        staff_assignments ( id, role, user_id, arrival_date, departure_date, arrival_flight,
+                             departure_flight, hotel_name, hotel_confirmation, travel_notes,
+                             users(full_name, email) ),
         booth_assets ( id, name, category, status, quantity ),
         tasks ( id, title, phase, status, due_date ),
         conference_budgets ( category, budgeted, actual ),
@@ -55,7 +56,10 @@ router.get('/:id', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/conferences — admin only
+// POST /api/conferences — admin only. CRITICAL FIX: organization_id was
+// never set on the insert, which has been silently broken since Phase 1
+// made that column NOT NULL — every attempt to create a new conference
+// has been failing. Also switched to req.userClient for tenant isolation.
 router.post('/', requireRole('admin'), async (req, res, next) => {
   try {
     const { name, venue, city, state, start_date, end_date, budget, notes, website_url } = req.body;
@@ -63,9 +67,13 @@ router.post('/', requireRole('admin'), async (req, res, next) => {
       return res.status(400).json({ error: 'name, start_date, and end_date are required' });
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await req.userClient
       .from('conferences')
-      .insert({ name, venue, city, state, start_date, end_date, budget, notes, website_url, created_by: req.user.id })
+      .insert({
+        name, venue, city, state, start_date, end_date, budget, notes, website_url,
+        created_by: req.user.id,
+        organization_id: req.user.organization_id,
+      })
       .select()
       .single();
 
@@ -74,7 +82,8 @@ router.post('/', requireRole('admin'), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PATCH /api/conferences/:id — admin only
+// PATCH /api/conferences/:id — admin only. Switched to req.userClient so
+// this can only affect a conference in the caller's org.
 router.patch('/:id', requireRole('admin'), async (req, res, next) => {
   try {
     const allowed = ['name','venue','city','state','start_date','end_date','budget','status','notes','hubspot_deal_id','website_url'];
@@ -82,22 +91,23 @@ router.patch('/:id', requireRole('admin'), async (req, res, next) => {
       Object.entries(req.body).filter(([k]) => allowed.includes(k))
     );
 
-    const { data, error } = await supabase
+    const { data, error } = await req.userClient
       .from('conferences')
       .update(updates)
       .eq('id', req.params.id)
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'Conference not found' });
     res.json(data);
   } catch (err) { next(err); }
 });
 
-// DELETE /api/conferences/:id — admin only
+// DELETE /api/conferences/:id — admin only. Switched to req.userClient.
 router.delete('/:id', requireRole('admin'), async (req, res, next) => {
   try {
-    const { error } = await supabase
+    const { error } = await req.userClient
       .from('conferences')
       .delete()
       .eq('id', req.params.id);
@@ -107,7 +117,9 @@ router.delete('/:id', requireRole('admin'), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/conferences/:id/budget — upsert budget line items
+// POST /api/conferences/:id/budget — upsert budget line items. Switched
+// to req.userClient so this can only affect budgets on a conference in
+// the caller's org.
 router.post('/:id/budget', requireRole('admin'), async (req, res, next) => {
   try {
     const { items } = req.body;
@@ -116,7 +128,7 @@ router.post('/:id/budget', requireRole('admin'), async (req, res, next) => {
     }
 
     const rows = items.map(i => ({ ...i, conference_id: req.params.id }));
-    const { data, error } = await supabase
+    const { data, error } = await req.userClient
       .from('conference_budgets')
       .upsert(rows, { onConflict: 'conference_id,category' })
       .select();
@@ -142,7 +154,8 @@ router.get('/:id/attachments', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/conferences/:id/attachments — add a link (or record after direct upload)
+// POST /api/conferences/:id/attachments — add a link (or record after
+// direct upload). Switched to req.userClient.
 router.post('/:id/attachments', requireRole('admin'), async (req, res, next) => {
   try {
     const { file_name, file_url, file_type, file_size } = req.body;
@@ -150,7 +163,7 @@ router.post('/:id/attachments', requireRole('admin'), async (req, res, next) => 
       return res.status(400).json({ error: 'file_name and file_url are required' });
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await req.userClient
       .from('conference_attachments')
       .insert({
         conference_id: req.params.id,
@@ -165,10 +178,10 @@ router.post('/:id/attachments', requireRole('admin'), async (req, res, next) => 
   } catch (err) { next(err); }
 });
 
-// DELETE /api/conferences/:id/attachments/:attachmentId
+// DELETE /api/conferences/:id/attachments/:attachmentId — switched to req.userClient.
 router.delete('/:id/attachments/:attachmentId', requireRole('admin'), async (req, res, next) => {
   try {
-    const { error } = await supabase
+    const { error } = await req.userClient
       .from('conference_attachments')
       .delete()
       .eq('id', req.params.attachmentId)
@@ -195,7 +208,7 @@ router.get('/:id/expenses', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/conferences/:id/expenses
+// POST /api/conferences/:id/expenses — switched to req.userClient.
 router.post('/:id/expenses', requireRole('admin', 'staff'), async (req, res, next) => {
   try {
     const { category, amount, expense_date, notes } = req.body;
@@ -203,7 +216,7 @@ router.post('/:id/expenses', requireRole('admin', 'staff'), async (req, res, nex
       return res.status(400).json({ error: 'category and amount are required' });
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await req.userClient
       .from('conference_expenses')
       .insert({
         conference_id: req.params.id,
@@ -218,7 +231,7 @@ router.post('/:id/expenses', requireRole('admin', 'staff'), async (req, res, nex
   } catch (err) { next(err); }
 });
 
-// PATCH /api/conferences/:id/expenses/:expenseId
+// PATCH /api/conferences/:id/expenses/:expenseId — switched to req.userClient.
 router.patch('/:id/expenses/:expenseId', requireRole('admin', 'staff'), async (req, res, next) => {
   try {
     const allowed = ['category', 'amount', 'expense_date', 'notes'];
@@ -226,23 +239,24 @@ router.patch('/:id/expenses/:expenseId', requireRole('admin', 'staff'), async (r
       Object.entries(req.body).filter(([k]) => allowed.includes(k))
     );
 
-    const { data, error } = await supabase
+    const { data, error } = await req.userClient
       .from('conference_expenses')
       .update(updates)
       .eq('id', req.params.expenseId)
       .eq('conference_id', req.params.id)
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'Expense not found' });
     res.json(data);
   } catch (err) { next(err); }
 });
 
-// DELETE /api/conferences/:id/expenses/:expenseId
+// DELETE /api/conferences/:id/expenses/:expenseId — switched to req.userClient.
 router.delete('/:id/expenses/:expenseId', requireRole('admin', 'staff'), async (req, res, next) => {
   try {
-    const { error } = await supabase
+    const { error } = await req.userClient
       .from('conference_expenses')
       .delete()
       .eq('id', req.params.expenseId)
