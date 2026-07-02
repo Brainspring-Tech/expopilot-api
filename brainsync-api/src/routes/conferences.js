@@ -2,6 +2,7 @@ const express = require('express');
 const router  = express.Router();
 const supabase = require('../services/supabase');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const PDFDocument = require('pdfkit');
 
 router.use(requireAuth);
 
@@ -39,9 +40,7 @@ router.get('/:id', async (req, res, next) => {
       .from('conferences')
       .select(`
         *,
-        staff_assignments ( id, role, user_id, arrival_date, departure_date, arrival_flight,
-                             departure_flight, hotel_name, hotel_confirmation, travel_notes,
-                             users(full_name, email) ),
+        staff_assignments ( id, role, user_id, users(full_name, email) ),
         booth_assets ( id, name, category, status, quantity ),
         tasks ( id, title, phase, status, due_date ),
         conference_budgets ( category, budgeted, actual ),
@@ -251,6 +250,132 @@ router.delete('/:id/expenses/:expenseId', requireRole('admin', 'staff'), async (
 
     if (error) throw error;
     res.status(204).send();
+  } catch (err) { next(err); }
+});
+
+// GET /api/conferences/:id/report/pdf — post-show recap report
+router.get('/:id/report/pdf', async (req, res, next) => {
+  try {
+    const confId = req.params.id;
+
+    const [confRes, leadsRes, budgetsRes, expensesRes, tasksRes, followUpsRes] = await Promise.all([
+      req.userClient.from('conferences').select('*').eq('id', confId).single(),
+      req.userClient.from('leads').select('*').eq('conference_id', confId),
+      req.userClient.from('conference_budgets').select('*').eq('conference_id', confId),
+      req.userClient.from('conference_expenses').select('*').eq('conference_id', confId),
+      req.userClient.from('tasks').select('*').eq('conference_id', confId),
+      req.userClient.from('leads')
+        .select('id, first_name, last_name, follow_up_tasks(*, users!follow_up_tasks_assigned_to_fkey(full_name))')
+        .eq('conference_id', confId),
+    ]);
+
+    if (confRes.error) throw confRes.error;
+    if (!confRes.data) return res.status(404).json({ error: 'Conference not found' });
+    if (leadsRes.error) throw leadsRes.error;
+    if (budgetsRes.error) throw budgetsRes.error;
+    if (expensesRes.error) throw expensesRes.error;
+    if (tasksRes.error) throw tasksRes.error;
+    if (followUpsRes.error) throw followUpsRes.error;
+
+    const conf     = confRes.data;
+    const leads    = leadsRes.data || [];
+    const budgets  = budgetsRes.data || [];
+    const expenses = expensesRes.data || [];
+    const tasks    = tasksRes.data || [];
+
+    // ── Compute stats ──
+    const totalLeads  = leads.length;
+    const hotLeads    = leads.filter(l => l.score >= 4).length;
+    const avgScore    = totalLeads ? leads.reduce((s, l) => s + (l.score || 0), 0) / totalLeads : 0;
+    const syncedCount = leads.filter(l => l.synced_to_hubspot).length;
+    const topLeads    = [...leads].sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 10);
+
+    const totalBudgeted     = budgets.reduce((s, b) => s + Number(b.budgeted || 0), 0);
+    const totalBudgetActual = budgets.reduce((s, b) => s + Number(b.actual || 0), 0);
+    const totalExpenses     = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
+
+    const totalTasks     = tasks.length;
+    const completedTasks = tasks.filter(t => t.status === 'done').length;
+    const overdueTasks   = tasks.filter(t => t.due_date && new Date(t.due_date) < new Date() && t.status !== 'done').length;
+
+    const followUps = [];
+    (followUpsRes.data || []).forEach(l => {
+      const leadName = [l.first_name, l.last_name].filter(Boolean).join(' ') || 'Unnamed lead';
+      (l.follow_up_tasks || []).forEach(f => {
+        followUps.push({
+          leadName,
+          action:      f.action,
+          due_date:    f.due_date,
+          assignedTo:  f.users?.full_name || 'Unassigned',
+        });
+      });
+    });
+
+    // ── Generate PDF ──
+    const safeName = (conf.name || 'conference').replace(/[^a-z0-9]/gi, '_');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}_recap.pdf"`);
+
+    const doc = new PDFDocument({ margin: 50 });
+    doc.pipe(res);
+
+    doc.fontSize(20).fillColor('#000').text(`${conf.name} — Post-Show Recap`);
+    doc.fontSize(11).fillColor('#555').text(
+      `${conf.venue ? conf.venue + ' · ' : ''}${[conf.city, conf.state].filter(Boolean).join(', ')}`
+    );
+    doc.text(`${conf.start_date || '—'} → ${conf.end_date || '—'}`);
+    doc.moveDown(1.5);
+
+    doc.fillColor('#000').fontSize(14).text('Lead Capture Summary', { underline: true });
+    doc.moveDown(0.5).fontSize(11);
+    doc.text(`Total leads captured: ${totalLeads}`);
+    doc.text(`Hot leads (score \u2265 4): ${hotLeads}`);
+    doc.text(`Average lead score: ${avgScore.toFixed(1)} / 5`);
+    doc.text(`Synced to HubSpot: ${syncedCount} / ${totalLeads}`);
+    doc.moveDown(1);
+
+    doc.fontSize(13).text('Top Leads by Interest Score');
+    doc.moveDown(0.3).fontSize(10);
+    if (topLeads.length === 0) {
+      doc.text('No leads captured.');
+    } else {
+      topLeads.forEach(l => {
+        const name = [l.first_name, l.last_name].filter(Boolean).join(' ') || l.email || 'Unnamed';
+        doc.text(`${name} — ${l.organization || '—'} — Score: ${l.score ?? '—'}/5`);
+      });
+    }
+    doc.moveDown(1);
+
+    doc.fontSize(14).text('Budget', { underline: true });
+    doc.moveDown(0.5).fontSize(11);
+    doc.text(`Total budgeted: $${totalBudgeted.toLocaleString()}`);
+    doc.text(`Total budget actuals: $${totalBudgetActual.toLocaleString()}`);
+    doc.text(`Total logged expenses: $${totalExpenses.toLocaleString()}`);
+    if (budgets.length > 0) {
+      doc.moveDown(0.5).fontSize(10);
+      budgets.forEach(b => {
+        doc.text(`${b.category}: budgeted $${Number(b.budgeted || 0).toLocaleString()}, actual $${Number(b.actual || 0).toLocaleString()}`);
+      });
+    }
+    doc.moveDown(1);
+
+    doc.fontSize(14).text('Task Completion', { underline: true });
+    doc.moveDown(0.5).fontSize(11);
+    doc.text(`${completedTasks} / ${totalTasks} tasks completed`);
+    doc.text(`${overdueTasks} overdue`);
+    doc.moveDown(1);
+
+    doc.fontSize(14).text('Follow-Ups', { underline: true });
+    doc.moveDown(0.5).fontSize(10);
+    if (followUps.length === 0) {
+      doc.text('No follow-ups logged.');
+    } else {
+      followUps.forEach(f => {
+        doc.text(`${f.leadName} — ${f.action} — Due: ${f.due_date || '—'} — Assigned: ${f.assignedTo}`);
+      });
+    }
+
+    doc.end();
   } catch (err) { next(err); }
 });
 
