@@ -38,7 +38,10 @@ router.post('/', requireRole('admin'), async (req, res, next) => {
     if (password.length < 8) {
       return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
-    const validRoles = ['admin', 'staff', 'viewer'];
+    // lead_capture: PWA-only role, hard-blocked from the admin console
+    // (see App.jsx). Lets an org give someone lead-capture access on the
+    // mobile app without ever exposing the admin tooling to them.
+    const validRoles = ['admin', 'staff', 'viewer', 'lead_capture'];
     const assignedRole = validRoles.includes(role) ? role : 'staff';
 
     // The handle_new_user() trigger reads organization_id from this
@@ -84,7 +87,7 @@ router.post('/', requireRole('admin'), async (req, res, next) => {
 router.patch('/:id/role', requireRole('admin'), async (req, res, next) => {
   try {
     const { role } = req.body;
-    const valid = ['admin', 'staff', 'viewer'];
+    const valid = ['admin', 'staff', 'viewer', 'lead_capture'];
     if (!valid.includes(role)) {
       return res.status(400).json({ error: `role must be one of: ${valid.join(', ')}` });
     }
