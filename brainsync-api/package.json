@@ -16,7 +16,8 @@
     "express-rate-limit": "^7.3.1",
     "helmet": "^7.1.0",
     "node-cron": "^3.0.3",
-    "pdfkit": "^0.15.2"
+    "pdfkit": "^0.15.2",
+    "stripe": "^22.3.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.3"

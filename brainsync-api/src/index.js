@@ -14,6 +14,8 @@ const usersRouter       = require('./routes/users');
 const visionRouter      = require('./routes/vision');
 const shiftsRouter      = require('./routes/shifts');
 const signupRouter      = require('./routes/signup');
+const stripeRouter        = require('./routes/stripe');
+const stripeWebhookRouter = require('./routes/stripeWebhook');
 
 const { startSyncJob } = require('./jobs/hubspotSync');
 
@@ -53,6 +55,12 @@ const signupLimiter = rateLimit({
   message: { error: 'Too many signup attempts from this network. Please try again later.' },
 });
 
+// ── Stripe webhook — MUST be mounted before express.json() ────────
+// Stripe signs the raw request body; if express.json() parses it first,
+// the signature check in stripeWebhook.js will always fail. express.raw()
+// hands the handler an untouched Buffer instead of a parsed object.
+app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }), stripeWebhookRouter);
+
 app.use(express.json({ limit: '8mb' }));
 
 // ── Health check (no auth required) ─────────────────────────────
@@ -71,6 +79,7 @@ app.use('/api/users',       usersRouter);
 app.use('/api/vision',      visionRouter);
 app.use('/api/shifts',      shiftsRouter);
 app.use('/api/signup',      signupLimiter, signupRouter);
+app.use('/api/stripe',      stripeRouter);
 
 // ── 404 handler ──────────────────────────────────────────────────
 app.use((req, res) => {

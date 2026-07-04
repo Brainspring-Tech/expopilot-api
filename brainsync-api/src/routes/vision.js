@@ -18,6 +18,27 @@ function startOfCurrentMonth() {
   return new Date(d.getFullYear(), d.getMonth(), 1).toISOString();
 }
 
+// Effective limit for the current month = base vision_scan_limit + any
+// one-time top-ups purchased THIS calendar month. Top-ups are scoped by
+// created_at the same way vision_usage is, so a top-up bought in June
+// doesn't silently carry over and inflate July's limit — it just stops
+// counting once the month rolls over, same natural reset as everything
+// else here.
+async function getEffectiveLimit(client, orgId, baseLimit) {
+  if (baseLimit == null) return null; // unlimited org, no need to check topups
+
+  const { data: topups, error } = await client
+    .from('vision_topups')
+    .select('scans_granted')
+    .eq('organization_id', orgId)
+    .gte('created_at', startOfCurrentMonth());
+
+  if (error) throw error;
+
+  const topupTotal = (topups || []).reduce((sum, t) => sum + t.scans_granted, 0);
+  return baseLimit + topupTotal;
+}
+
 // POST /api/vision/business-card
 // Body: { image: '<base64 string, no data: prefix>', mediaType: 'image/jpeg' }
 // Returns: { text: '<raw model response text>' }
@@ -29,10 +50,10 @@ function startOfCurrentMonth() {
 // never exposed to the client build).
 //
 // Enforces an optional per-organization monthly cap (organizations.
-// vision_scan_limit) before making the call, and logs every successful
-// call to vision_usage — this is the one feature that costs real money
-// per use, so it's the one place that needs cost visibility and control
-// as more organizations sign up.
+// vision_scan_limit, plus any current-month top-ups) before making the
+// call, and logs every successful call to vision_usage — this is the one
+// feature that costs real money per use, so it's the one place that needs
+// cost visibility and control as more organizations sign up.
 router.post('/business-card', async (req, res, next) => {
   try {
     const { image, mediaType } = req.body;
@@ -50,7 +71,9 @@ router.post('/business-card', async (req, res, next) => {
 
     if (orgError) throw orgError;
 
-    if (org?.vision_scan_limit != null) {
+    const effectiveLimit = await getEffectiveLimit(req.userClient, orgId, org?.vision_scan_limit);
+
+    if (effectiveLimit != null) {
       const { count, error: countError } = await req.userClient
         .from('vision_usage')
         .select('id', { count: 'exact', head: true })
@@ -59,9 +82,9 @@ router.post('/business-card', async (req, res, next) => {
 
       if (countError) throw countError;
 
-      if (count >= org.vision_scan_limit) {
+      if (count >= effectiveLimit) {
         return res.status(429).json({
-          error: `Your organization has reached its monthly limit of ${org.vision_scan_limit} AI-assisted card scans. You can still add this lead manually — contact support to increase your limit.`,
+          error: `Your organization has reached its monthly limit of ${effectiveLimit} AI-assisted card scans. You can still add this lead manually, or purchase a scan top-up.`,
         });
       }
     }
@@ -112,9 +135,9 @@ router.post('/business-card', async (req, res, next) => {
   }
 });
 
-// GET /api/vision/usage — current month's scan count and limit for the
-// caller's organization. Not used by the UI yet, but ready for a small
-// "AI scans used: 42 / 500 this month" widget whenever that's wanted.
+// GET /api/vision/usage — current month's scan count and effective limit
+// (base + any top-ups purchased this month) for the caller's organization.
+// Powers the "AI scans used: 42 / 300 this month" widget.
 router.get('/usage', async (req, res, next) => {
   try {
     const orgId = req.user.organization_id;
@@ -127,6 +150,8 @@ router.get('/usage', async (req, res, next) => {
 
     if (orgError) throw orgError;
 
+    const effectiveLimit = await getEffectiveLimit(req.userClient, orgId, org?.vision_scan_limit);
+
     const { count, error: countError } = await req.userClient
       .from('vision_usage')
       .select('id', { count: 'exact', head: true })
@@ -135,7 +160,7 @@ router.get('/usage', async (req, res, next) => {
 
     if (countError) throw countError;
 
-    res.json({ used: count || 0, limit: org?.vision_scan_limit ?? null });
+    res.json({ used: count || 0, limit: effectiveLimit });
   } catch (err) { next(err); }
 });
 
