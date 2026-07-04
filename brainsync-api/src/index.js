@@ -3,7 +3,7 @@ const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
-
+ 
 const conferencesRouter = require('./routes/conferences');
 const leadsRouter       = require('./routes/leads');
 const syncRouter        = require('./routes/sync');
@@ -16,11 +16,12 @@ const shiftsRouter      = require('./routes/shifts');
 const signupRouter      = require('./routes/signup');
 const stripeRouter        = require('./routes/stripe');
 const stripeWebhookRouter = require('./routes/stripeWebhook');
-
+const organizationsRouter = require('./routes/organizations');
+ 
 const { startSyncJob } = require('./jobs/hubspotSync');
-
+ 
 const app = express();
-
+ 
 // ── Security middleware ─────────────────────────────────────────
 app.use(helmet());
 app.use(cors({
@@ -34,7 +35,7 @@ app.use(cors({
   ],
   credentials: true,
 }));
-
+ 
 // Rate limiting — 120 req/min per IP
 app.use(rateLimit({
   windowMs: 60 * 1000,
@@ -42,7 +43,7 @@ app.use(rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 }));
-
+ 
 // Tighter rate limit specifically for signup — this is the one public,
 // unauthenticated write endpoint in the API, so it's worth limiting
 // separately from normal traffic to make bulk/automated org creation
@@ -54,20 +55,20 @@ const signupLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many signup attempts from this network. Please try again later.' },
 });
-
+ 
 // ── Stripe webhook — MUST be mounted before express.json() ────────
 // Stripe signs the raw request body; if express.json() parses it first,
 // the signature check in stripeWebhook.js will always fail. express.raw()
 // hands the handler an untouched Buffer instead of a parsed object.
 app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }), stripeWebhookRouter);
-
+ 
 app.use(express.json({ limit: '8mb' }));
-
+ 
 // ── Health check (no auth required) ─────────────────────────────
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', ts: new Date().toISOString() });
 });
-
+ 
 // ── API routes ───────────────────────────────────────────────────
 app.use('/api/conferences', conferencesRouter);
 app.use('/api/leads',       leadsRouter);
@@ -80,12 +81,13 @@ app.use('/api/vision',      visionRouter);
 app.use('/api/shifts',      shiftsRouter);
 app.use('/api/signup',      signupLimiter, signupRouter);
 app.use('/api/stripe',      stripeRouter);
-
+app.use('/api/organizations', organizationsRouter);
+ 
 // ── 404 handler ──────────────────────────────────────────────────
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
-
+ 
 // ── Global error handler ─────────────────────────────────────────
 app.use((err, req, res, next) => {
   console.error('[error]', err.message, err.stack);
@@ -93,7 +95,7 @@ app.use((err, req, res, next) => {
     error: err.message || 'Internal server error',
   });
 });
-
+ 
 // ── Start server ───────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
@@ -103,3 +105,4 @@ app.listen(PORT, () => {
     console.log('HubSpot sync job scheduled');
   }
 });
+ 
