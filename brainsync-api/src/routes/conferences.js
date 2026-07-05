@@ -41,7 +41,7 @@ router.get('/:id', async (req, res, next) => {
         *,
         staff_assignments ( id, role, user_id, arrival_date, departure_date, arrival_flight,
                              departure_flight, hotel_name, hotel_confirmation, travel_notes,
-                             users(full_name, email) ),
+                             users(full_name, email, job_title, phone, avatar_url) ),
         booth_assets ( id, name, category, status, quantity ),
         tasks ( id, title, phase, status, due_date, is_important ),
         conference_budgets ( category, budgeted, actual ),
@@ -200,7 +200,7 @@ router.get('/:id/comments', async (req, res, next) => {
   try {
     const { data, error } = await req.userClient
       .from('conference_comments')
-      .select('*, users(full_name)')
+      .select('*, users(full_name, avatar_url)')
       .eq('conference_id', req.params.id)
       .order('created_at', { ascending: true });
 
@@ -227,7 +227,7 @@ router.post('/:id/comments', async (req, res, next) => {
         user_id: req.user.id,
         body: body.trim(),
       })
-      .select('*, users(full_name)')
+      .select('*, users(full_name, avatar_url)')
       .single();
 
     if (error) throw error;
