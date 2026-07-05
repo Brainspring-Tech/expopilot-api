@@ -96,4 +96,59 @@ router.get('/overview', async (req, res, next) => {
   }
 });
 
+// PATCH /api/platform/organizations/:id
+// Updates seat_limit and/or vision_scan_limit for a single org. Deliberately
+// NOT exposed to org admins themselves (see /api/organizations/me, which
+// only ever reads) — these numbers represent what a customer is actually
+// paying for, so only the platform operator can change them. A customer
+// editing their own limits would let them grant themselves unlimited
+// seats/scans for free, which defeats the entire point of having a limit.
+//
+// Both fields are optional and independently updatable — only whichever
+// keys are present in the body get touched. Passing null explicitly clears
+// a limit back to "unlimited" (matches how vision.js's getEffectiveLimit
+// already treats NULL). Anything else must be a non-negative integer.
+router.patch('/organizations/:id', async (req, res, next) => {
+  try {
+    const { seat_limit, vision_scan_limit } = req.body;
+    const updates = {};
+
+    function validateLimit(value, fieldName) {
+      if (value === null) return null;
+      if (value === undefined) return undefined;
+      const n = Number(value);
+      if (!Number.isInteger(n) || n < 0) {
+        throw Object.assign(
+          new Error(`${fieldName} must be a non-negative integer, or null for unlimited`),
+          { status: 400 }
+        );
+      }
+      return n;
+    }
+
+    if ('seat_limit' in req.body) {
+      updates.seat_limit = validateLimit(seat_limit, 'seat_limit');
+    }
+    if ('vision_scan_limit' in req.body) {
+      updates.vision_scan_limit = validateLimit(vision_scan_limit, 'vision_scan_limit');
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'Provide at least one of: seat_limit, vision_scan_limit' });
+    }
+
+    const { data, error } = await supabase
+      .from('organizations')
+      .update(updates)
+      .eq('id', req.params.id)
+      .select('id, name, seat_limit, vision_scan_limit')
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'Organization not found' });
+
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
 module.exports = router;
