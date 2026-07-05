@@ -8,6 +8,13 @@ const supabase = require('../services/supabase');
 
 const TRIAL_DAYS = 14;
 
+// Matches the published plan: 200 AI-assisted scans/month included, with
+// $19/+100 top-ups available beyond that (see vision_topups and
+// vision.js's getEffectiveLimit). Every new org should start with this
+// set explicitly — leaving vision_scan_limit unset defaults to NULL,
+// which vision.js treats as unlimited.
+const DEFAULT_VISION_SCAN_LIMIT = 200;
+
 function slugify(name) {
   return name
     .toLowerCase()
@@ -83,7 +90,13 @@ router.post('/', async (req, res, next) => {
     // handle_new_user() writes into public.users.
     const { data: org, error: orgError } = await supabase
       .from('organizations')
-      .insert({ name: org_name, slug, trial_ends_at: trialEndsAt, plan_status: 'trial' })
+      .insert({
+        name: org_name,
+        slug,
+        trial_ends_at: trialEndsAt,
+        plan_status: 'trial',
+        vision_scan_limit: DEFAULT_VISION_SCAN_LIMIT,
+      })
       .select()
       .single();
 

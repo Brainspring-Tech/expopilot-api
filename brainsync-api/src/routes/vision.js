@@ -1,6 +1,7 @@
 const express = require('express');
 const router  = express.Router();
 const axios   = require('axios');
+const rateLimit = require('express-rate-limit');
 const { requireAuth } = require('../middleware/auth');
 
 // All vision routes require a logged-in user — this is a paid API call,
@@ -9,6 +10,34 @@ router.use(requireAuth);
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-sonnet-4-6';
+
+// Rate limit specifically for the scan endpoint — this is the one route
+// that costs real money per call (~$0.01/scan: one business-card image
+// plus a short JSON completion). This is separate from, and in addition
+// to, the monthly vision_scan_limit/top-up quota below — that quota caps
+// total monthly cost per org, but only if it's actually configured
+// (defaults to null/unlimited until an org's limit is set). This limiter
+// exists specifically to bound worst-case cost from a single runaway
+// client — a buggy retry loop, or a compromised/scripted account — even
+// when the monthly quota isn't set or hasn't been hit yet.
+//
+// Keyed on the logged-in user, not IP: several staffers on the same
+// conference WiFi shouldn't share one bucket, and this should follow the
+// account regardless of network.
+//
+// 100 requests/hour ≈ $1/hour worst case at ~$0.01/scan — generous enough
+// that a real staffer scanning a big stack of cards in a rush never hits
+// it, but bounds a runaway script well before it costs anything real.
+const scanRateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id || req.ip,
+  message: {
+    error: 'Too many scan requests from this account in the last hour. Please wait a bit, or add this lead manually in the meantime.',
+  },
+});
 
 // Start of the current calendar month, in ISO form. Scoping usage counts
 // to "since this timestamp" gives a monthly window that resets itself
@@ -53,8 +82,9 @@ async function getEffectiveLimit(client, orgId, baseLimit) {
 // vision_scan_limit, plus any current-month top-ups) before making the
 // call, and logs every successful call to vision_usage — this is the one
 // feature that costs real money per use, so it's the one place that needs
-// cost visibility and control as more organizations sign up.
-router.post('/business-card', async (req, res, next) => {
+// cost visibility and control as more organizations sign up. Also enforced
+// by scanRateLimiter above, independent of the monthly quota.
+router.post('/business-card', scanRateLimiter, async (req, res, next) => {
   try {
     const { image, mediaType } = req.body;
     if (!image) {
@@ -137,7 +167,8 @@ router.post('/business-card', async (req, res, next) => {
 
 // GET /api/vision/usage — current month's scan count and effective limit
 // (base + any top-ups purchased this month) for the caller's organization.
-// Powers the "AI scans used: 42 / 300 this month" widget.
+// Powers the "AI scans used: 42 / 300 this month" widget. Deliberately NOT
+// behind scanRateLimiter — this is a free read, not a paid API call.
 router.get('/usage', async (req, res, next) => {
   try {
     const orgId = req.user.organization_id;
