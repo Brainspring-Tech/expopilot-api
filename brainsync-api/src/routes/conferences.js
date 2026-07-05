@@ -43,9 +43,10 @@ router.get('/:id', async (req, res, next) => {
                              departure_flight, hotel_name, hotel_confirmation, travel_notes,
                              users(full_name, email) ),
         booth_assets ( id, name, category, status, quantity ),
-        tasks ( id, title, phase, status, due_date ),
+        tasks ( id, title, phase, status, due_date, is_important ),
         conference_budgets ( category, budgeted, actual ),
-        conference_attachments ( id, file_name, file_url, file_type, file_size, created_at, users(full_name) )
+        conference_attachments ( id, file_name, file_url, file_type, file_size, created_at, users(full_name) ),
+        conference_comments ( id )
       `)
       .eq('id', req.params.id)
       .single();
@@ -185,6 +186,81 @@ router.delete('/:id/attachments/:attachmentId', requireRole('admin'), async (req
       .from('conference_attachments')
       .delete()
       .eq('id', req.params.attachmentId)
+      .eq('conference_id', req.params.id);
+
+    if (error) throw error;
+    res.status(204).send();
+  } catch (err) { next(err); }
+});
+
+// ── Discussion ───────────────────────────────────────────────
+
+// GET /api/conferences/:id/comments
+router.get('/:id/comments', async (req, res, next) => {
+  try {
+    const { data, error } = await req.userClient
+      .from('conference_comments')
+      .select('*, users(full_name)')
+      .eq('conference_id', req.params.id)
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
+// POST /api/conferences/:id/comments — any org member (not just admin)
+// can post, mirroring how staff can already create tasks. RLS is the
+// real tenant-isolation boundary here (see the "org insert" policy on
+// conference_comments), same as everywhere else in this file.
+router.post('/:id/comments', async (req, res, next) => {
+  try {
+    const { body } = req.body;
+    if (!body || !body.trim()) {
+      return res.status(400).json({ error: 'body is required' });
+    }
+
+    const { data, error } = await req.userClient
+      .from('conference_comments')
+      .insert({
+        conference_id: req.params.id,
+        user_id: req.user.id,
+        body: body.trim(),
+      })
+      .select('*, users(full_name)')
+      .single();
+
+    if (error) throw error;
+    res.status(201).json(data);
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/conferences/:id/comments/:commentId — author or admin
+// only. Explicit ownership check here as defense-in-depth, matching the
+// pattern used for shifts/users elsewhere, even though the "author or
+// admin delete" RLS policy should already enforce this.
+router.delete('/:id/comments/:commentId', async (req, res, next) => {
+  try {
+    const { data: comment, error: lookupError } = await req.userClient
+      .from('conference_comments')
+      .select('user_id')
+      .eq('id', req.params.commentId)
+      .eq('conference_id', req.params.id)
+      .maybeSingle();
+
+    if (lookupError) throw lookupError;
+    if (!comment) return res.status(404).json({ error: 'Comment not found' });
+
+    const isAuthor = comment.user_id === req.user.id;
+    const isAdmin  = req.user.role === 'admin';
+    if (!isAuthor && !isAdmin) {
+      return res.status(403).json({ error: 'You can only delete your own comments' });
+    }
+
+    const { error } = await req.userClient
+      .from('conference_comments')
+      .delete()
+      .eq('id', req.params.commentId)
       .eq('conference_id', req.params.id);
 
     if (error) throw error;

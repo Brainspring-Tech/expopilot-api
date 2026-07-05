@@ -28,14 +28,17 @@ router.get('/', async (req, res, next) => {
 // to, while the tenant/assignment check now actually gets enforced.
 router.post('/', async (req, res, next) => {
   try {
-    const { conference_id, title, description, phase, assigned_to, due_date } = req.body;
+    const { conference_id, title, description, phase, assigned_to, due_date, is_important } = req.body;
     if (!conference_id || !title) {
       return res.status(400).json({ error: 'conference_id and title are required' });
     }
 
     const { data, error } = await req.userClient
       .from('tasks')
-      .insert({ conference_id, title, description, phase: phase || 'pre_show', assigned_to, due_date })
+      .insert({
+        conference_id, title, description, phase: phase || 'pre_show', assigned_to, due_date,
+        is_important: !!is_important,
+      })
       .select()
       .single();
 
@@ -50,7 +53,7 @@ router.post('/', async (req, res, next) => {
 // client with no check at all.
 router.patch('/:id', async (req, res, next) => {
   try {
-    const allowed = ['title','description','phase','status','assigned_to','due_date'];
+    const allowed = ['title','description','phase','status','assigned_to','due_date','is_important'];
     const updates = Object.fromEntries(
       Object.entries(req.body).filter(([k]) => allowed.includes(k))
     );
