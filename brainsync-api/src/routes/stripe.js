@@ -13,7 +13,7 @@ const PRICE_IDS = {
 };
 
 // POST /api/stripe/checkout
-// Body: { planType: 'monthly' | 'annual' | 'topup' }
+// Body: { planType: 'monthly' | 'annual' | 'topup', redirectTo?: 'billing' | 'login' }
 // Returns: { url: '<stripe checkout url>' }
 //
 // Creates a Stripe Checkout Session and returns its URL — the frontend
@@ -21,7 +21,7 @@ const PRICE_IDS = {
 // so no card data ever touches our servers.
 router.post('/checkout', async (req, res, next) => {
   try {
-    const { planType } = req.body;
+    const { planType, redirectTo } = req.body;
     const priceId = PRICE_IDS[planType];
 
     if (!priceId) {
@@ -55,11 +55,23 @@ router.post('/checkout', async (req, res, next) => {
 
     const isTopup = planType === 'topup';
 
+    // redirectTo === 'login' is for the buy-now-during-signup flow: the
+    // caller authenticated with a token obtained just for this one API
+    // call and has no real browser session on the admin console's own
+    // origin, so it needs to land on /login (with its email pre-filled)
+    // rather than /billing, which would otherwise bounce an unauthenticated
+    // browser straight back to /login anyway, losing the success context.
+    // Default stays /billing — unchanged for the existing "subscribe from
+    // an already-logged-in Billing page" flow.
+    const successUrl = redirectTo === 'login'
+      ? `${process.env.ADMIN_URL}/login?checkout=success&email=${encodeURIComponent(req.user.email)}`
+      : `${process.env.ADMIN_URL}/billing?checkout=success`;
+
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
       mode: isTopup ? 'payment' : 'subscription',
       line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `${process.env.ADMIN_URL}/billing?checkout=success`,
+      success_url: successUrl,
       cancel_url: `${process.env.ADMIN_URL}/billing?checkout=cancelled`,
       metadata: { organization_id: orgId },
     });
