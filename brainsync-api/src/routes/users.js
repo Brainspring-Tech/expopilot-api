@@ -10,6 +10,91 @@ router.get('/me', async (req, res) => {
   res.json(req.user);
 });
 
+// PATCH /api/users/me — self-serve profile update. Deliberately does NOT
+// allow role or email here — email changes go through Supabase Auth's
+// own verified-email-change flow, not this endpoint, and role is admin-
+// only (see PATCH /:id/role below).
+router.patch('/me', async (req, res, next) => {
+  try {
+    const allowed = ['full_name', 'job_title', 'phone', 'avatar_url'];
+    const updates = Object.fromEntries(
+      Object.entries(req.body).filter(([k]) => allowed.includes(k))
+    );
+
+    const { data, error } = await req.userClient
+      .from('users')
+      .update(updates)
+      .eq('id', req.user.id)
+      .select('id, full_name, email, role, job_title, phone, avatar_url')
+      .single();
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
+// PATCH /api/users/:id/profile — admin: update profile fields for
+// someone else in the same org (e.g. onboarding a new hire's job title
+// and photo for them). Never touches role — that stays on the
+// dedicated /:id/role route. req.userClient + RLS scopes this to the
+// caller's own org already; the explicit organization_id check below is
+// defense-in-depth, matching the pattern used elsewhere in this file.
+router.patch('/:id/profile', requireRole('admin'), async (req, res, next) => {
+  try {
+    const { data: targetUser, error: targetError } = await req.userClient
+      .from('users')
+      .select('id, organization_id')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (targetError) throw targetError;
+    if (!targetUser) return res.status(404).json({ error: 'User not found' });
+    if (targetUser.organization_id !== req.user.organization_id) {
+      return res.status(403).json({ error: 'That user is not in your organization' });
+    }
+
+    const allowed = ['full_name', 'job_title', 'phone', 'avatar_url'];
+    const updates = Object.fromEntries(
+      Object.entries(req.body).filter(([k]) => allowed.includes(k))
+    );
+
+    const { data, error } = await req.userClient
+      .from('users')
+      .update(updates)
+      .eq('id', req.params.id)
+      .select('id, full_name, email, role, job_title, phone, avatar_url')
+      .single();
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
+// GET /api/users/:id/contact — the "click a name, see their contact
+// card" lookup. Any authenticated org member can look up any coworker's
+// card (by design — see the "users: org member read directory" RLS
+// policy), not just admins. Explicit organization_id check here as
+// defense-in-depth, same pattern as elsewhere in this file, even though
+// RLS should already prevent cross-org reads.
+router.get('/:id/contact', async (req, res, next) => {
+  try {
+    const { data, error } = await req.userClient
+      .from('users')
+      .select('id, full_name, email, role, job_title, phone, avatar_url, organization_id')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'User not found' });
+    if (data.organization_id !== req.user.organization_id) {
+      return res.status(403).json({ error: 'That user is not in your organization' });
+    }
+
+    const { organization_id, ...contact } = data;
+    res.json(contact);
+  } catch (err) { next(err); }
+});
+
 // GET /api/users — admin: list all staff in the caller's organization.
 // Switched to req.userClient so RLS ("users: admin read all") scopes
 // this to the caller's own org — previously used the service-role
@@ -18,7 +103,7 @@ router.get('/', requireRole('admin'), async (req, res, next) => {
   try {
     const { data, error } = await req.userClient
       .from('users')
-      .select('id, full_name, email, role, created_at')
+      .select('id, full_name, email, role, created_at, job_title, phone, avatar_url')
       .order('full_name');
 
     if (error) throw error;

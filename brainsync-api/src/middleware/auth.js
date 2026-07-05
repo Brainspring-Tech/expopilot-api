@@ -32,13 +32,14 @@ async function requireAuth(req, res, next) {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
 
-  // Pull role, organization, AND platform_operator flag from public.users.
-  // is_platform_operator gates access to cross-org platform visibility
-  // routes (see requirePlatformOperator below) — it's separate from role
-  // because it's not org-scoped like admin/staff/lead_capture are.
+  // Pull role, organization, platform_operator flag, and profile fields
+  // (job_title/phone/avatar_url) from public.users. is_platform_operator
+  // gates access to cross-org platform visibility routes (see
+  // requirePlatformOperator below) — it's separate from role because
+  // it's not org-scoped like admin/staff/lead_capture are.
   const { data: profile } = await verifier
     .from('users')
-    .select('id, full_name, email, role, organization_id, is_platform_operator')
+    .select('id, full_name, email, role, organization_id, is_platform_operator, job_title, phone, avatar_url')
     .eq('auth_id', user.id)
     .single();
 
