@@ -17,6 +17,7 @@ const signupRouter      = require('./routes/signup');
 const stripeRouter        = require('./routes/stripe');
 const stripeWebhookRouter = require('./routes/stripeWebhook');
 const organizationsRouter = require('./routes/organizations');
+const platformRouter      = require('./routes/platform');
  
 const { startSyncJob } = require('./jobs/hubspotSync');
  
@@ -82,6 +83,7 @@ app.use('/api/shifts',      shiftsRouter);
 app.use('/api/signup',      signupLimiter, signupRouter);
 app.use('/api/stripe',      stripeRouter);
 app.use('/api/organizations', organizationsRouter);
+app.use('/api/platform',    platformRouter);
  
 // ── 404 handler ──────────────────────────────────────────────────
 app.use((req, res) => {
@@ -105,4 +107,3 @@ app.listen(PORT, () => {
     console.log('HubSpot sync job scheduled');
   }
 });
- 
