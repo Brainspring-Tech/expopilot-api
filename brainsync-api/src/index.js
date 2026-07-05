@@ -37,12 +37,21 @@ app.use(cors({
   credentials: true,
 }));
  
-// Rate limiting — 120 req/min per IP
+// Rate limiting — 120 req/min per IP.
+// Stripe's webhook is exempted (see `skip` below): it's already
+// authenticated by signature verification in stripeWebhook.js, not by
+// this limiter, and there's a real downside to throttling it — if Stripe
+// ever needs to retry a burst of events (e.g. after a temporary outage),
+// getting rate-limited here would make Stripe see failures and back off,
+// which could delay critical billing state updates (cancellations,
+// failed payments) reaching the database. No matching upside, since the
+// route's real security is the signature check, not shared request volume.
 app.use(rateLimit({
   windowMs: 60 * 1000,
   max: 120,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => req.path.startsWith('/api/stripe/webhook'),
 }));
  
 // Tighter rate limit specifically for signup — this is the one public,
