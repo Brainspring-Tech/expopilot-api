@@ -32,16 +32,17 @@ async function requireAuth(req, res, next) {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
 
-  // Pull role AND organization from public.users — organization_id is
-  // required everywhere now that the app is multi-tenant, so it needs
-  // to be on req.user alongside role.
+  // Pull role, organization, AND platform_operator flag from public.users.
+  // is_platform_operator gates access to cross-org platform visibility
+  // routes (see requirePlatformOperator below) — it's separate from role
+  // because it's not org-scoped like admin/staff/lead_capture are.
   const { data: profile } = await verifier
     .from('users')
-    .select('id, full_name, email, role, organization_id')
+    .select('id, full_name, email, role, organization_id, is_platform_operator')
     .eq('auth_id', user.id)
     .single();
 
-  req.user      = profile || { auth_id: user.id, email: user.email, role: 'staff' };
+  req.user      = profile || { auth_id: user.id, email: user.email, role: 'staff', is_platform_operator: false };
   req.token     = token;
   req.userClient = getUserClient(token);  // RLS-scoped client for reads AND writes
   next();
@@ -56,4 +57,17 @@ function requireRole(...roles) {
   };
 }
 
-module.exports = { requireAuth, requireRole };
+// Gates routes that intentionally see across ALL organizations — e.g. the
+// platform-operator overview screen. This is a hard, narrow allowlist
+// check (not a role), since being an org's "admin" should never imply
+// visibility into other orgs' data. Routes behind this middleware should
+// use the service-role Supabase client, not req.userClient, since RLS
+// would otherwise correctly block cross-org reads anyway.
+function requirePlatformOperator(req, res, next) {
+  if (!req.user?.is_platform_operator) {
+    return res.status(403).json({ error: 'Insufficient permissions' });
+  }
+  next();
+}
+
+module.exports = { requireAuth, requireRole, requirePlatformOperator };
