@@ -4,17 +4,27 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 
 router.use(requireAuth);
 
-// GET /api/shifts?conference_id=xxx — list shifts for a conference
+// GET /api/shifts?conference_id=xxx&user_id=xxx
+// Admins can filter by any user_id (e.g. the admin console's per-conference
+// shift schedule, which lists everyone). Everyone else — staff,
+// lead_capture, viewer — can only ever get their OWN shifts, regardless of
+// what user_id (if any) is passed. This is an explicit ownership check
+// rather than relying on RLS alone, matching the pattern already used in
+// users.js and staff_assignments routes. With no conference_id given, this
+// also now doubles as "my schedule across every conference" for the PWA.
 router.get('/', async (req, res, next) => {
   try {
+    const isAdmin = req.user.role === 'admin';
+    const effectiveUserId = isAdmin ? req.query.user_id : req.user.id;
+
     let query = req.userClient
       .from('staff_shifts')
-      .select('*, users!staff_shifts_user_id_fkey(full_name)')
+      .select('*, users!staff_shifts_user_id_fkey(full_name), conferences(name, venue, city, state, start_date, end_date)')
       .order('shift_date', { ascending: true })
       .order('start_time', { ascending: true });
 
     if (req.query.conference_id) query = query.eq('conference_id', req.query.conference_id);
-    if (req.query.user_id)       query = query.eq('user_id', req.query.user_id);
+    if (effectiveUserId)         query = query.eq('user_id', effectiveUserId);
 
     const { data, error } = await query;
     if (error) throw error;
