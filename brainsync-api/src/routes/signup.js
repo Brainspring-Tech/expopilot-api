@@ -6,7 +6,7 @@ const supabase = require('../services/supabase');
 // endpoint in the whole API that must be reachable by someone who doesn't
 // have an account yet.
 
-const TRIAL_DAYS = 14;
+const TRIAL_DAYS = 30;
 
 // Matches the published plan: 200 AI-assisted scans/month included, with
 // $19/+100 top-ups available beyond that (see vision_topups and
