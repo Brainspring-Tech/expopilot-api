@@ -44,6 +44,36 @@ router.post('/', requireRole('admin'), async (req, res, next) => {
     const validRoles = ['admin', 'staff', 'viewer', 'lead_capture'];
     const assignedRole = validRoles.includes(role) ? role : 'staff';
 
+    // Seat limit check. lead_capture is deliberately excluded — it's a
+    // PWA-only role with a different usage pattern than an admin-console
+    // seat (mirrors how it's already excluded from other admin-console
+    // gating elsewhere in this app). A null seat_limit means unlimited,
+    // same convention as vision_scan_limit on the vision routes.
+    if (assignedRole !== 'lead_capture') {
+      const { data: org, error: orgError } = await req.userClient
+        .from('organizations')
+        .select('seat_limit')
+        .eq('id', req.user.organization_id)
+        .single();
+
+      if (orgError) throw orgError;
+
+      if (org.seat_limit != null) {
+        const { count, error: countError } = await req.userClient
+          .from('users')
+          .select('id', { count: 'exact', head: true })
+          .neq('role', 'lead_capture');
+
+        if (countError) throw countError;
+
+        if (count >= org.seat_limit) {
+          return res.status(403).json({
+            error: `You've reached your plan's seat limit (${org.seat_limit} seats used). Contact support or upgrade your plan to add more team members.`,
+          });
+        }
+      }
+    }
+
     // The handle_new_user() trigger reads organization_id from this
     // metadata to set it on the new profile row — the new user inherits
     // the creating admin's organization. Without this, the trigger's
