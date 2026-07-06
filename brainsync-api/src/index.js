@@ -18,8 +18,10 @@ const stripeRouter        = require('./routes/stripe');
 const stripeWebhookRouter = require('./routes/stripeWebhook');
 const organizationsRouter = require('./routes/organizations');
 const platformRouter      = require('./routes/platform');
+const integrationsRouter  = require('./routes/integrations');
  
 const { startSyncJob } = require('./jobs/hubspotSync');
+const { startCrmSyncJob } = require('./jobs/crmSync');
  
 const app = express();
  
@@ -93,6 +95,7 @@ app.use('/api/signup',      signupLimiter, signupRouter);
 app.use('/api/stripe',      stripeRouter);
 app.use('/api/organizations', organizationsRouter);
 app.use('/api/platform',    platformRouter);
+app.use('/api/integrations', integrationsRouter);
  
 // ── 404 handler ──────────────────────────────────────────────────
 app.use((req, res) => {
@@ -114,5 +117,7 @@ app.listen(PORT, () => {
   if (process.env.NODE_ENV === 'production') {
     startSyncJob();
     console.log('HubSpot sync job scheduled');
+    startCrmSyncJob();
+    console.log('CRM integrations sync job scheduled');
   }
 });
