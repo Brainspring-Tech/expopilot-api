@@ -10,6 +10,24 @@ router.get('/me', async (req, res) => {
   res.json(req.user);
 });
 
+// PATCH /api/users/me/activate — called by the set-password page right
+// after supabase.auth.updateUser({ password }) succeeds, so the invite
+// no longer shows as "pending" in the admin's Users list. Idempotent —
+// safe to call even if already active.
+router.patch('/me/activate', async (req, res, next) => {
+  try {
+    const { data, error } = await req.userClient
+      .from('users')
+      .update({ status: 'active' })
+      .eq('id', req.user.id)
+      .select('id, status')
+      .single();
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
 // PATCH /api/users/me — self-serve profile update. Deliberately does NOT
 // allow role or email here — email changes go through Supabase Auth's
 // own verified-email-change flow, not this endpoint, and role is admin-
@@ -96,14 +114,13 @@ router.get('/:id/contact', async (req, res, next) => {
 });
 
 // GET /api/users — admin: list all staff in the caller's organization.
-// Switched to req.userClient so RLS ("users: admin read all") scopes
-// this to the caller's own org — previously used the service-role
-// client and returned every user across every organization.
+// Includes `status` ('invited' | 'active') so the UI can show a pending
+// badge and offer a resend-invite action.
 router.get('/', requireRole('admin'), async (req, res, next) => {
   try {
     const { data, error } = await req.userClient
       .from('users')
-      .select('id, full_name, email, role, created_at, job_title, phone, avatar_url')
+      .select('id, full_name, email, role, status, created_at, job_title, phone, avatar_url')
       .order('full_name');
 
     if (error) throw error;
@@ -111,63 +128,75 @@ router.get('/', requireRole('admin'), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/users — admin: create a new user (auth + profile row) in
-// the caller's organization.
+// POST /api/users — admin: invite a new user into the caller's
+// organization. No password is set here — Supabase sends the branded
+// "Invite user" email (custom SMTP via Resend) with a link that lets the
+// invitee set their own password on either the admin console or PWA's
+// set-password page, depending on role. See POST /:id/resend-invite for
+// re-sending an expired/unactioned invite.
 router.post('/', requireRole('admin'), async (req, res, next) => {
   try {
-    const { email, password, full_name, role } = req.body;
+    const { email, full_name, role } = req.body;
 
-    if (!email || !password || !full_name) {
-      return res.status(400).json({ error: 'email, password, and full_name are required' });
+    if (!email || !full_name) {
+      return res.status(400).json({ error: 'email and full_name are required' });
     }
-    if (password.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters' });
-    }
+
     // lead_capture: PWA-only role, hard-blocked from the admin console
     // (see App.jsx). Lets an org give someone lead-capture access on the
     // mobile app without ever exposing the admin tooling to them.
     const validRoles = ['admin', 'staff', 'viewer', 'lead_capture'];
     const assignedRole = validRoles.includes(role) ? role : 'staff';
 
+    const { data: org, error: orgError } = await req.userClient
+      .from('organizations')
+      .select('seat_limit, name')
+      .eq('id', req.user.organization_id)
+      .single();
+
+    if (orgError) throw orgError;
+
     // Seat limit check. lead_capture is deliberately excluded — it's a
     // PWA-only role with a different usage pattern than an admin-console
     // seat (mirrors how it's already excluded from other admin-console
     // gating elsewhere in this app). A null seat_limit means unlimited,
     // same convention as vision_scan_limit on the vision routes.
-    if (assignedRole !== 'lead_capture') {
-      const { data: org, error: orgError } = await req.userClient
-        .from('organizations')
-        .select('seat_limit')
-        .eq('id', req.user.organization_id)
-        .single();
+    if (assignedRole !== 'lead_capture' && org.seat_limit != null) {
+      const { count, error: countError } = await req.userClient
+        .from('users')
+        .select('id', { count: 'exact', head: true })
+        .neq('role', 'lead_capture');
 
-      if (orgError) throw orgError;
+      if (countError) throw countError;
 
-      if (org.seat_limit != null) {
-        const { count, error: countError } = await req.userClient
-          .from('users')
-          .select('id', { count: 'exact', head: true })
-          .neq('role', 'lead_capture');
-
-        if (countError) throw countError;
-
-        if (count >= org.seat_limit) {
-          return res.status(403).json({
-            error: `You've reached your plan's seat limit (${org.seat_limit} seats used). Contact support or upgrade your plan to add more team members.`,
-          });
-        }
+      if (count >= org.seat_limit) {
+        return res.status(403).json({
+          error: `You've reached your plan's seat limit (${org.seat_limit} seats used). Contact support or upgrade your plan to add more team members.`,
+        });
       }
     }
 
-    // The handle_new_user() trigger reads organization_id from this
-    // metadata to set it on the new profile row — the new user inherits
-    // the creating admin's organization. Without this, the trigger's
-    // insert into public.users fails (organization_id is NOT NULL).
-    const { data: authData, error: authError } = await supabase.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true,
-      user_metadata: { full_name, organization_id: req.user.organization_id },
+    // role-based routing: admin/staff/viewer land on the admin console's
+    // set-password page; lead_capture lands on the PWA's, since that's
+    // the only surface that role ever touches.
+    const redirectTo = assignedRole === 'lead_capture'
+      ? 'https://app.expopilot.app/set-password'
+      : 'https://admin.expopilot.app/set-password';
+
+    // The handle_new_user() trigger reads full_name/organization_id from
+    // this metadata to set up the new profile row (status defaults to
+    // 'invited' via the column default — see migration). role/org_name
+    // are included purely so the "Invite user" email template can
+    // reference {{ .Data.role }} / {{ .Data.org_name }} for the
+    // role-conditional home-screen-install section.
+    const { data: authData, error: authError } = await supabase.auth.admin.inviteUserByEmail(email, {
+      data: {
+        full_name,
+        organization_id: req.user.organization_id,
+        role: assignedRole,
+        org_name: org.name,
+      },
+      redirectTo,
     });
 
     if (authError) {
@@ -186,13 +215,64 @@ router.post('/', requireRole('admin'), async (req, res, next) => {
 
     const { data: profile, error: profileError } = await supabase
       .from('users')
-      .select('id, full_name, email, role, created_at')
+      .select('id, full_name, email, role, status, created_at')
       .eq('auth_id', authData.user.id)
       .single();
 
     if (profileError) throw profileError;
 
     res.status(201).json(profile);
+  } catch (err) { next(err); }
+});
+
+// POST /api/users/:id/resend-invite — admin: re-send the invite email
+// for a user stuck in 'invited' status (expired link, lost the email,
+// etc). Blocked once a user is 'active', so this can't be repurposed as
+// a password-reset trigger for someone who's already signed in before.
+router.post('/:id/resend-invite', requireRole('admin'), async (req, res, next) => {
+  try {
+    const { data: targetUser, error: targetError } = await req.userClient
+      .from('users')
+      .select('id, email, full_name, role, status, organization_id')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (targetError) throw targetError;
+    if (!targetUser) return res.status(404).json({ error: 'User not found' });
+    if (targetUser.organization_id !== req.user.organization_id) {
+      return res.status(403).json({ error: 'That user is not in your organization' });
+    }
+    if (targetUser.status === 'active') {
+      return res.status(400).json({
+        error: 'This user has already completed setup. If they need help signing in, use a password reset instead.',
+      });
+    }
+
+    const { data: org, error: orgError } = await req.userClient
+      .from('organizations')
+      .select('name')
+      .eq('id', req.user.organization_id)
+      .single();
+
+    if (orgError) throw orgError;
+
+    const redirectTo = targetUser.role === 'lead_capture'
+      ? 'https://app.expopilot.app/set-password'
+      : 'https://admin.expopilot.app/set-password';
+
+    const { error: authError } = await supabase.auth.admin.inviteUserByEmail(targetUser.email, {
+      data: {
+        full_name: targetUser.full_name,
+        organization_id: targetUser.organization_id,
+        role: targetUser.role,
+        org_name: org.name,
+      },
+      redirectTo,
+    });
+
+    if (authError) throw authError;
+
+    res.json({ message: 'Invite re-sent' });
   } catch (err) { next(err); }
 });
 
