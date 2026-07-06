@@ -113,6 +113,26 @@ router.get('/:id/contact', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /api/users/directory — lightweight org roster for assignment
+// pickers (e.g. the Staff tab's "add staff" dropdown). Open to any
+// authenticated org member, not just admins — RLS ("users: org member
+// read directory") already permits reading a coworker's row one at a
+// time via the contact-card lookup (including email), so this doesn't
+// expose anything that wasn't already readable, just in bulk. Still
+// excludes phone/job_title — full detail requires the admin-only list
+// below or the single-row /:id/contact lookup.
+router.get('/directory', async (req, res, next) => {
+  try {
+    const { data, error } = await req.userClient
+      .from('users')
+      .select('id, full_name, email, role, avatar_url')
+      .order('full_name');
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
 // GET /api/users — admin: list all staff in the caller's organization.
 // Includes `status` ('invited' | 'active') so the UI can show a pending
 // badge and offer a resend-invite action.
