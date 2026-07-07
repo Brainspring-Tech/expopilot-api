@@ -128,7 +128,12 @@ router.post('/session', async (req, res, next) => {
 // search actually happened this turn.
 router.post('/chat', async (req, res, next) => {
   try {
-    const { message } = req.body;
+    // filterLabel is optional — sent by the frontend when the message
+    // came from a quick-action filter chip (e.g. "Under $5k") rather than
+    // free-text chat. When present, it gets appended to filter_history so
+    // it shows up as a removable chip in the UI on reload/resume, distinct
+    // from the free-text chat_transcript.
+    const { message, filterLabel } = req.body;
     if (!message) return res.status(400).json({ error: 'message is required' });
 
     const { data: session, error: sessionError } = await req.userClient
@@ -205,12 +210,16 @@ router.post('/chat', async (req, res, next) => {
 
     const newTranscript = [...transcript, { role: 'user', content: message }, { role: 'assistant', content: parsed.reply }];
     const finalUsed = usedSearchThisTurn ? session.searches_used + 1 : session.searches_used;
+    const newFilterHistory = filterLabel
+      ? [...(session.filter_history || []), filterLabel]
+      : (session.filter_history || []);
 
     const { data: updatedSession, error: updateError } = await req.userClient
       .from('prospect_finder_sessions')
       .update({
         results: parsed.results || [],
         chat_transcript: newTranscript,
+        filter_history: newFilterHistory,
         searches_used: finalUsed,
         updated_at: new Date().toISOString(),
       })
@@ -235,6 +244,37 @@ router.post('/chat', async (req, res, next) => {
       search_credit_used: usedSearchThisTurn,
       searches_remaining: Math.max(0, limit - finalUsed),
     });
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/prospect-finder/filters/:index — removes one entry from the
+// filter history log. Just edits the log itself; if removing a filter
+// should also change the visible results, the frontend follows this with
+// a normal /chat message asking to reconsider without it — kept as two
+// separate steps rather than one endpoint trying to do both.
+router.delete('/filters/:index', async (req, res, next) => {
+  try {
+    const index = parseInt(req.params.index, 10);
+    const { data: session, error: sessionError } = await req.userClient
+      .from('prospect_finder_sessions')
+      .select('filter_history')
+      .eq('user_id', req.user.id)
+      .maybeSingle();
+
+    if (sessionError) throw sessionError;
+    if (!session) return res.status(404).json({ error: 'No active session' });
+
+    const updatedHistory = (session.filter_history || []).filter((_, i) => i !== index);
+
+    const { data, error } = await req.userClient
+      .from('prospect_finder_sessions')
+      .update({ filter_history: updatedHistory, updated_at: new Date().toISOString() })
+      .eq('user_id', req.user.id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.json(data);
   } catch (err) { next(err); }
 });
 

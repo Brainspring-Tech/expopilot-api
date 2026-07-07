@@ -9,13 +9,17 @@ router.use(requireAuth);
 // not the raw stripe_customer_id/stripe_subscription_id, since those are
 // internal plumbing the frontend has no use for. has_billing_account is
 // enough for the UI to decide "Subscribe" vs "Manage billing".
+//
+// prospect_finder_enabled added for the sidebar's Prospects nav item —
+// same "return a derived/plain field, not raw internals" spirit as
+// has_billing_account above.
 router.get('/me', async (req, res, next) => {
   try {
     const orgId = req.user.organization_id;
 
     const { data: org, error } = await req.userClient
       .from('organizations')
-      .select('id, name, plan_status, trial_ends_at, stripe_customer_id')
+      .select('id, name, plan_status, trial_ends_at, stripe_customer_id, prospect_finder_enabled')
       .eq('id', orgId)
       .maybeSingle();
 
@@ -28,6 +32,7 @@ router.get('/me', async (req, res, next) => {
       plan_status: org.plan_status,
       trial_ends_at: org.trial_ends_at,
       has_billing_account: !!org.stripe_customer_id,
+      prospect_finder_enabled: !!org.prospect_finder_enabled,
     });
   } catch (err) { next(err); }
 });
