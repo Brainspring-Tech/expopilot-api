@@ -5,17 +5,10 @@ const supabase = require('../services/supabase'); // service-role client — no
                                                     // logged-in user exists
                                                     // when Stripe calls this
 
-// How many scans a single top-up purchase grants. If this ever needs to
-// vary (e.g. multiple top-up sizes), read it from the session's line
-// items instead of hardcoding — fine as a constant while there's one
-// top-up price.
 const TOPUP_SCANS_GRANTED = 100;
 
-// Maps a Stripe subscription status to our own plan_status values.
-// Stripe has more granular statuses (trialing, incomplete, incomplete_expired,
-// past_due, canceled, unpaid, paused) than we currently act on — anything
-// not explicitly listed here falls through to 'past_due' as a safe default
-// rather than silently leaving an org in a stale state.
+const PRO_PRICE_IDS = [process.env.STRIPE_PRICE_PRO_MONTHLY, process.env.STRIPE_PRICE_PRO_ANNUAL];
+
 function mapSubscriptionStatus(stripeStatus) {
   switch (stripeStatus) {
     case 'active':
@@ -30,12 +23,15 @@ function mapSubscriptionStatus(stripeStatus) {
   }
 }
 
-// POST /api/stripe/webhook
-// Mounted BEFORE express.json() in index.js — Stripe's signature
-// verification needs the raw, unparsed request body. If this route ever
-// sees a parsed body instead of a Buffer, signature verification will
-// fail with a cryptic error, so double check mounting order first if
-// this route starts rejecting everything.
+// Inspects a Stripe subscription's current price to determine which tier
+// it represents. Used on customer.subscription.updated so a tier change
+// made any way (our /change-tier endpoint, or manually in the Stripe
+// dashboard) ends up reflected in plan_tier/prospect_finder_enabled.
+function tierForSubscription(subscription) {
+  const priceId = subscription.items?.data?.[0]?.price?.id;
+  return PRO_PRICE_IDS.includes(priceId) ? 'pro' : 'standard';
+}
+
 router.post('/', async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
@@ -52,6 +48,7 @@ router.post('/', async (req, res) => {
       case 'checkout.session.completed': {
         const session = event.data.object;
         const orgId = session.metadata?.organization_id;
+        const tier = session.metadata?.tier === 'pro' ? 'pro' : 'standard';
 
         if (!orgId) {
           console.error('[stripe webhook] checkout.session.completed with no organization_id metadata', session.id);
@@ -65,14 +62,13 @@ router.post('/', async (req, res) => {
               stripe_customer_id: session.customer,
               stripe_subscription_id: session.subscription,
               plan_status: 'active',
+              plan_tier: tier,
+              prospect_finder_enabled: tier === 'pro',
             })
             .eq('id', orgId);
 
           if (error) console.error('[stripe webhook] failed to update org after subscription checkout:', error.message);
         } else if (session.mode === 'payment') {
-          // Top-up purchase — grant scans for the current month via the
-          // same ledger pattern vision_usage already uses, rather than
-          // permanently raising the org's base limit.
           const { error } = await supabase
             .from('vision_topups')
             .insert({
@@ -88,9 +84,15 @@ router.post('/', async (req, res) => {
 
       case 'customer.subscription.updated': {
         const subscription = event.data.object;
+        const tier = tierForSubscription(subscription);
+
         const { error } = await supabase
           .from('organizations')
-          .update({ plan_status: mapSubscriptionStatus(subscription.status) })
+          .update({
+            plan_status: mapSubscriptionStatus(subscription.status),
+            plan_tier: tier,
+            prospect_finder_enabled: tier === 'pro',
+          })
           .eq('stripe_subscription_id', subscription.id);
 
         if (error) console.error('[stripe webhook] failed to update org on subscription update:', error.message);
@@ -101,7 +103,11 @@ router.post('/', async (req, res) => {
         const subscription = event.data.object;
         const { error } = await supabase
           .from('organizations')
-          .update({ plan_status: 'canceled' })
+          .update({
+            plan_status: 'canceled',
+            plan_tier: 'standard',
+            prospect_finder_enabled: false,
+          })
           .eq('stripe_subscription_id', subscription.id);
 
         if (error) console.error('[stripe webhook] failed to update org on subscription deletion:', error.message);
@@ -109,15 +115,9 @@ router.post('/', async (req, res) => {
       }
 
       default:
-        // Unhandled event types are fine to ignore — Stripe sends many
-        // more event types than we act on.
         break;
     }
 
-    // Always 200 once signature is verified and we've attempted handling,
-    // even if a downstream Supabase update logged an error above —
-    // returning a non-200 here just makes Stripe retry the same event,
-    // which won't fix a real bug and will spam logs.
     res.json({ received: true });
   } catch (err) {
     console.error('[stripe webhook] unhandled error processing event:', event.type, err.message);

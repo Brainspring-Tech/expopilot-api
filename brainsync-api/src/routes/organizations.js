@@ -19,7 +19,7 @@ router.get('/me', async (req, res, next) => {
 
     const { data: org, error } = await req.userClient
       .from('organizations')
-      .select('id, name, plan_status, trial_ends_at, stripe_customer_id, prospect_finder_enabled')
+      .select('id, name, plan_status, plan_tier, trial_ends_at, stripe_customer_id, prospect_finder_enabled')
       .eq('id', orgId)
       .maybeSingle();
 
@@ -30,6 +30,7 @@ router.get('/me', async (req, res, next) => {
       id: org.id,
       name: org.name,
       plan_status: org.plan_status,
+      plan_tier: org.plan_tier,
       trial_ends_at: org.trial_ends_at,
       has_billing_account: !!org.stripe_customer_id,
       prospect_finder_enabled: !!org.prospect_finder_enabled,

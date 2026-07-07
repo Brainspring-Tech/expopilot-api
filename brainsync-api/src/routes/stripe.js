@@ -7,25 +7,43 @@ const { requireAuth } = require('../middleware/auth');
 router.use(requireAuth);
 
 const PRICE_IDS = {
-  monthly: process.env.STRIPE_PRICE_MONTHLY,
-  annual:  process.env.STRIPE_PRICE_ANNUAL,
-  topup:   process.env.STRIPE_PRICE_TOPUP,
+  monthly:     process.env.STRIPE_PRICE_MONTHLY,
+  annual:      process.env.STRIPE_PRICE_ANNUAL,
+  topup:       process.env.STRIPE_PRICE_TOPUP,
+  pro_monthly: process.env.STRIPE_PRICE_PRO_MONTHLY,
+  pro_annual:  process.env.STRIPE_PRICE_PRO_ANNUAL,
 };
 
+// Used by /change-tier to find the equivalent price on the other tier at
+// the same billing interval — e.g. an org paying monthly on Standard
+// upgrades to monthly Pro, not annual Pro.
+const TIER_PRICE_MAP = {
+  standard: { monthly: PRICE_IDS.monthly,     annual: PRICE_IDS.annual },
+  pro:      { monthly: PRICE_IDS.pro_monthly, annual: PRICE_IDS.pro_annual },
+};
+
+function intervalForPriceId(priceId) {
+  if (priceId === PRICE_IDS.annual || priceId === PRICE_IDS.pro_annual) return 'annual';
+  if (priceId === PRICE_IDS.monthly || priceId === PRICE_IDS.pro_monthly) return 'monthly';
+  return null;
+}
+
 // POST /api/stripe/checkout
-// Body: { planType: 'monthly' | 'annual' | 'topup', redirectTo?: 'billing' | 'login' }
+// Body: { planType: 'monthly' | 'annual' | 'topup' | 'pro_monthly' | 'pro_annual', redirectTo?: 'billing' | 'login' }
 // Returns: { url: '<stripe checkout url>' }
 //
-// Creates a Stripe Checkout Session and returns its URL — the frontend
-// just redirects the browser there. Stripe hosts the actual payment form,
-// so no card data ever touches our servers.
+// For brand-new subscriptions only — an org with no active subscription
+// yet, picking a plan (Standard or Pro) for the first time. An existing
+// subscriber moving between tiers uses /change-tier instead, which
+// updates their current subscription in place rather than starting a
+// second one.
 router.post('/checkout', async (req, res, next) => {
   try {
     const { planType, redirectTo } = req.body;
     const priceId = PRICE_IDS[planType];
 
     if (!priceId) {
-      return res.status(400).json({ error: 'planType must be one of: monthly, annual, topup' });
+      return res.status(400).json({ error: 'planType must be one of: monthly, annual, topup, pro_monthly, pro_annual' });
     }
 
     const orgId = req.user.organization_id;
@@ -39,10 +57,6 @@ router.post('/checkout', async (req, res, next) => {
     if (orgError) throw orgError;
     if (!org) return res.status(404).json({ error: 'Organization not found' });
 
-    // Reuse an existing Stripe customer if this org already has one
-    // (e.g. buying a top-up after already subscribing), otherwise let
-    // Checkout create one — we save the id via the webhook once the
-    // session completes, so we don't need to write it here.
     let customerId = org.stripe_customer_id;
     if (!customerId) {
       const customer = await stripe.customers.create({
@@ -54,15 +68,8 @@ router.post('/checkout', async (req, res, next) => {
     }
 
     const isTopup = planType === 'topup';
+    const tier = planType.startsWith('pro_') ? 'pro' : 'standard';
 
-    // redirectTo === 'login' is for the buy-now-during-signup flow: the
-    // caller authenticated with a token obtained just for this one API
-    // call and has no real browser session on the admin console's own
-    // origin, so it needs to land on /login (with its email pre-filled)
-    // rather than /billing, which would otherwise bounce an unauthenticated
-    // browser straight back to /login anyway, losing the success context.
-    // Default stays /billing — unchanged for the existing "subscribe from
-    // an already-logged-in Billing page" flow.
     const successUrl = redirectTo === 'login'
       ? `${process.env.ADMIN_URL}/login?checkout=success&email=${encodeURIComponent(req.user.email)}`
       : `${process.env.ADMIN_URL}/billing?checkout=success`;
@@ -73,21 +80,92 @@ router.post('/checkout', async (req, res, next) => {
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: successUrl,
       cancel_url: `${process.env.ADMIN_URL}/billing?checkout=cancelled`,
-      metadata: { organization_id: orgId },
+      // tier tells the webhook whether this new subscription is Standard
+      // or Pro, so it can set plan_tier + prospect_finder_enabled
+      // correctly on checkout.session.completed.
+      metadata: { organization_id: orgId, tier },
     });
 
     res.json({ url: session.url });
   } catch (err) { next(err); }
 });
 
+// POST /api/stripe/change-tier
+// Body: { toTier: 'standard' | 'pro' }
+// Returns: the updated organization row
+//
+// For an org that ALREADY has an active subscription, changing tiers.
+// Swaps the price on their existing subscription item (matching their
+// current billing interval — monthly stays monthly, annual stays annual)
+// with immediate proration, rather than creating a second subscription.
+// If the org has no active subscription yet, this returns an error
+// telling the frontend to use /checkout instead — there's nothing to
+// "change," they need to subscribe for the first time.
+router.post('/change-tier', async (req, res, next) => {
+  try {
+    const { toTier } = req.body;
+    if (!['standard', 'pro'].includes(toTier)) {
+      return res.status(400).json({ error: 'toTier must be "standard" or "pro"' });
+    }
+
+    const orgId = req.user.organization_id;
+
+    const { data: org, error: orgError } = await req.userClient
+      .from('organizations')
+      .select('id, stripe_subscription_id, plan_status')
+      .eq('id', orgId)
+      .maybeSingle();
+
+    if (orgError) throw orgError;
+    if (!org) return res.status(404).json({ error: 'Organization not found' });
+
+    if (!org.stripe_subscription_id || org.plan_status !== 'active') {
+      return res.status(400).json({
+        error: 'No active subscription to change — subscribe to a plan first.',
+        code: 'NO_ACTIVE_SUBSCRIPTION',
+      });
+    }
+
+    const subscription = await stripe.subscriptions.retrieve(org.stripe_subscription_id);
+    const currentItem = subscription.items.data[0];
+    const currentPriceId = currentItem.price.id;
+    const interval = intervalForPriceId(currentPriceId);
+
+    if (!interval) {
+      return res.status(500).json({ error: 'Could not determine billing interval for the current subscription' });
+    }
+
+    const newPriceId = TIER_PRICE_MAP[toTier][interval];
+    if (!newPriceId) {
+      return res.status(500).json({ error: `Missing price configuration for ${toTier} ${interval}` });
+    }
+
+    await stripe.subscriptions.update(org.stripe_subscription_id, {
+      items: [{ id: currentItem.id, price: newPriceId }],
+      proration_behavior: 'create_prorations',
+    });
+
+    // Update immediately rather than waiting on the webhook round-trip,
+    // so the person sees the unlock take effect right away. The webhook
+    // (customer.subscription.updated) will also fire and re-confirm the
+    // same values — harmless, since it's idempotent.
+    const { data: updatedOrg, error: updateError } = await req.userClient
+      .from('organizations')
+      .update({
+        plan_tier: toTier,
+        prospect_finder_enabled: toTier === 'pro',
+      })
+      .eq('id', orgId)
+      .select()
+      .single();
+
+    if (updateError) throw updateError;
+    res.json(updatedOrg);
+  } catch (err) { next(err); }
+});
+
 // POST /api/stripe/portal
 // Returns: { url: '<stripe customer portal url>' }
-//
-// Stripe's hosted Customer Portal — lets the customer update their card,
-// view invoices, and cancel their subscription, all without any custom
-// UI on our side. What's allowed in the portal (e.g. we only allow
-// cancel + payment method update, not plan switching since there's only
-// one plan) is configured in the Stripe Dashboard, not here.
 router.post('/portal', async (req, res, next) => {
   try {
     const orgId = req.user.organization_id;
