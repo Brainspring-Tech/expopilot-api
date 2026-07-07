@@ -145,6 +145,26 @@ router.post('/change-tier', async (req, res, next) => {
       proration_behavior: 'create_prorations',
     });
 
+    // proration_behavior alone only calculates the prorated amount as a
+    // pending line item — it does NOT charge it right away by default,
+    // it would otherwise just get folded into whatever invoice comes
+    // next (typically their regular renewal). Explicitly creating an
+    // invoice here bundles that pending proration and attempts to charge
+    // it immediately, matching "charge now, unlock now." If this fails
+    // (e.g. card declined), the price change already went through and
+    // access is already granted below — the charge will simply be
+    // picked up on their next regular invoice instead as a fallback,
+    // rather than blocking the unlock on a billing hiccup.
+    try {
+      await stripe.invoices.create({
+        customer: subscription.customer,
+        subscription: org.stripe_subscription_id,
+        auto_advance: true,
+      });
+    } catch (invoiceErr) {
+      console.error('[change-tier] immediate proration invoice failed, will bill at next renewal instead:', invoiceErr.message);
+    }
+
     // Update immediately rather than waiting on the webhook round-trip,
     // so the person sees the unlock take effect right away. The webhook
     // (customer.subscription.updated) will also fire and re-confirm the
