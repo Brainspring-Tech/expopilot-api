@@ -298,6 +298,7 @@ router.post('/add-to-prospects', async (req, res, next) => {
       .from('conferences')
       .insert({
         name: card.name,
+        organization_id: req.user.organization_id,
         status: 'prospect',
         fit_rationale: card.fit_rationale || null,
         source_links: card.source_links || [],
