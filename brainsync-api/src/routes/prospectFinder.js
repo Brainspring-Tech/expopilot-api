@@ -187,13 +187,18 @@ router.post('/chat', async (req, res, next) => {
 
     const tools = searchBudgetRemaining ? [{ type: 'web_search_20250305', name: 'web_search' }] : [];
 
+    console.log(`[prospect-finder] chat request starting — user=${req.user.id} searchBudgetRemaining=${searchBudgetRemaining}`);
+    const startedAt = Date.now();
+
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-5',
       max_tokens: 4000,
       system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: promptParts.join('\n\n') }],
       ...(tools.length ? { tools } : {}),
-    });
+    }, { timeout: 90000 }); // fail after 90s instead of hanging indefinitely
+
+    console.log(`[prospect-finder] chat request completed in ${Date.now() - startedAt}ms`);
 
     const usedSearchThisTurn = response.content.some(
       block => block.type === 'server_tool_use' || block.type === 'web_search_tool_result'
