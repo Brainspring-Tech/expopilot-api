@@ -5,14 +5,35 @@ const PDFDocument = require('pdfkit');
 
 router.use(requireAuth);
 
-// GET /api/conferences — list all (admin) or assigned (staff)
+// GET /api/conferences — list all (admin) or assigned (staff).
+// Optional ?status=planning or ?status=planning,active (comma-separated)
+// includes only those statuses. Optional ?exclude_status=prospect (also
+// comma-separated) excludes those instead — used by the PWA's conference
+// picker so prospect-stage conferences don't show up there, without
+// needing to enumerate every other status. Omitting both params preserves
+// the old unfiltered behavior (the admin console wants to see everything,
+// including prospects, so it never passes either param).
 router.get('/', async (req, res, next) => {
   try {
     const client = req.userClient;
-    const { data, error } = await client
+    let query = client
       .from('conferences')
       .select('*')
       .order('start_date', { ascending: false });
+
+    if (req.query.status) {
+      const statuses = req.query.status.split(',').map(s => s.trim()).filter(Boolean);
+      query = statuses.length > 1 ? query.in('status', statuses) : query.eq('status', statuses[0]);
+    }
+
+    if (req.query.exclude_status) {
+      const excluded = req.query.exclude_status.split(',').map(s => s.trim()).filter(Boolean);
+      query = excluded.length > 1
+        ? query.not('status', 'in', `(${excluded.join(',')})`)
+        : query.neq('status', excluded[0]);
+    }
+
+    const { data, error } = await query;
 
     if (error) throw error;
     res.json(data);
