@@ -151,4 +151,25 @@ router.patch('/organizations/:id', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /api/platform/feedback
+// Cross-org feedback inbox for the platform operator — every org's
+// submissions in one place, newest first. Service-role client (same
+// reasoning as /overview above): the RLS policy on `feedback` only lets
+// an org's own admin read their own org's rows, which is correct for
+// req.userClient but is exactly what this route needs to bypass.
+// Capped at 500 most-recent rows — revisit with real pagination if
+// volume ever outgrows that.
+router.get('/feedback', async (req, res, next) => {
+  try {
+    const { data, error } = await supabase
+      .from('feedback')
+      .select('*, organizations(name), users(full_name, email)')
+      .order('created_at', { ascending: false })
+      .limit(500);
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
 module.exports = router;
