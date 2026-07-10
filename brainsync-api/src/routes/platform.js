@@ -1,6 +1,12 @@
 const express  = require('express');
 const router   = express.Router();
 const { requireAuth, requirePlatformOperator } = require('../middleware/auth');
+const {
+  validateGrantInput,
+  getGrantsForOrg,
+  getActiveGrantForOrg,
+  logPlatformAction,
+} = require('../services/accessGrants');
 const supabase = require('../services/supabase'); // service-role client —
                                                     // intentional: this route's
                                                     // whole purpose is reading
@@ -45,7 +51,7 @@ router.get('/overview', async (req, res, next) => {
     startOfMonth.setUTCDate(1);
     startOfMonth.setUTCHours(0, 0, 0, 0);
 
-    const [usersRes, conferencesRes, visionUsageRes, topupsRes] = await Promise.all([
+    const [usersRes, conferencesRes, visionUsageRes, topupsRes, grantsRes] = await Promise.all([
       supabase.from('users').select('organization_id').in('organization_id', orgIds),
       supabase.from('conferences').select('organization_id').in('organization_id', orgIds),
       supabase
@@ -58,33 +64,58 @@ router.get('/overview', async (req, res, next) => {
         .select('organization_id, scans_granted')
         .in('organization_id', orgIds)
         .gte('created_at', startOfMonth.toISOString()),
+      supabase
+        .from('manual_access_grants')
+        .select('organization_id, expires_at, starts_at, revoked_at, reason')
+        .in('organization_id', orgIds)
+        .is('revoked_at', null)
+        .gt('expires_at', new Date().toISOString()),
     ]);
 
     if (usersRes.error) throw usersRes.error;
     if (conferencesRes.error) throw conferencesRes.error;
     if (visionUsageRes.error) throw visionUsageRes.error;
     if (topupsRes.error) throw topupsRes.error;
+    if (grantsRes.error) throw grantsRes.error;
 
     const seatCounts = countBy(usersRes.data, 'organization_id');
     const conferenceCounts = countBy(conferencesRes.data, 'organization_id');
     const scanCounts = countBy(visionUsageRes.data, 'organization_id');
     const topupTotals = sumBy(topupsRes.data, 'organization_id', 'scans_granted');
 
+    // Only unrevoked, unexpired grants were fetched above, so any row
+    // present here is by definition "currently active" — keep the
+    // furthest-expiring one per org in the unlikely case more than one
+    // overlaps (matches findActiveGrant's tie-break in accessGrants.js).
+    const activeGrantByOrg = new Map();
+    for (const grant of grantsRes.data) {
+      const existing = activeGrantByOrg.get(grant.organization_id);
+      if (!existing || new Date(grant.expires_at) > new Date(existing.expires_at)) {
+        activeGrantByOrg.set(grant.organization_id, grant);
+      }
+    }
+
     const result = orgs
-      .map((org) => ({
-        id: org.id,
-        name: org.name,
-        slug: org.slug,
-        created_at: org.created_at,
-        trial_ends_at: org.trial_ends_at,
-        plan_status: org.plan_status,
-        seats_used: seatCounts.get(org.id) || 0,
-        seat_limit: org.seat_limit,
-        scans_used_this_month: scanCounts.get(org.id) || 0,
-        scans_included: org.vision_scan_limit,
-        topup_scans_this_month: topupTotals.get(org.id) || 0,
-        conference_count: conferenceCounts.get(org.id) || 0,
-      }))
+      .map((org) => {
+        const activeGrant = activeGrantByOrg.get(org.id) || null;
+        return {
+          id: org.id,
+          name: org.name,
+          slug: org.slug,
+          created_at: org.created_at,
+          trial_ends_at: org.trial_ends_at,
+          plan_status: org.plan_status,
+          seats_used: seatCounts.get(org.id) || 0,
+          seat_limit: org.seat_limit,
+          scans_used_this_month: scanCounts.get(org.id) || 0,
+          scans_included: org.vision_scan_limit,
+          topup_scans_this_month: topupTotals.get(org.id) || 0,
+          conference_count: conferenceCounts.get(org.id) || 0,
+          active_manual_grant: activeGrant
+            ? { expires_at: activeGrant.expires_at, reason: activeGrant.reason }
+            : null,
+        };
+      })
       .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
     res.json({
@@ -148,6 +179,167 @@ router.patch('/organizations/:id', async (req, res, next) => {
     if (!data) return res.status(404).json({ error: 'Organization not found' });
 
     res.json(data);
+  } catch (err) { next(err); }
+});
+
+// GET /api/platform/users/lookup?email=someone@example.com
+// Resolves which organization a given person belongs to, so the platform
+// operator can grant free access having only a pilot contact's email —
+// they don't need to already know the org's name/id. Not paginated /
+// fuzzy on purpose: exact-email lookup only, same spirit as this being an
+// operator tool rather than a general directory search.
+router.get('/users/lookup', async (req, res, next) => {
+  try {
+    const email = String(req.query.email || '').trim().toLowerCase();
+    if (!email) return res.status(400).json({ error: 'email query param is required' });
+
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('id, full_name, email, organization_id, organizations(id, name, slug, plan_status)')
+      .ilike('email', email)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!user) return res.status(404).json({ error: 'No user found with that email' });
+
+    res.json({
+      user: { id: user.id, full_name: user.full_name, email: user.email },
+      organization: user.organizations,
+    });
+  } catch (err) { next(err); }
+});
+
+// GET /api/platform/access-grants
+// Every manual access grant ever issued, across all orgs, newest first —
+// the "who granted what, when, and why" audit view. Distinct from
+// /organizations/:id/access-grants below (which is scoped to one org and
+// used right after issuing/revoking a grant for that org).
+router.get('/access-grants', async (req, res, next) => {
+  try {
+    const { data, error } = await supabase
+      .from('manual_access_grants')
+      .select(`
+        id, organization_id, reason, starts_at, expires_at, revoked_at, created_at,
+        organizations(name, slug),
+        granted_by:granted_by_user_id(full_name, email),
+        revoked_by:revoked_by_user_id(full_name, email)
+      `)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
+// GET /api/platform/organizations/:id/access-grants
+// Full grant history (active, expired, and revoked) for a single org.
+router.get('/organizations/:id/access-grants', async (req, res, next) => {
+  try {
+    const grants = await getGrantsForOrg(req.params.id);
+    res.json(grants);
+  } catch (err) { next(err); }
+});
+
+// POST /api/platform/organizations/:id/access-grants
+// Body: { months?: number (default 12), reason: string }
+// Grants an org free platform access for the given number of months,
+// bypassing Stripe entirely — for Expo Pilot / beta testers giving
+// usability feedback, not paying customers. Rejects a second active grant
+// for the same org (the frontend should surface "revoke the existing
+// grant first" rather than silently stacking grants); a NEW grant can
+// always be issued once the old one is revoked or has expired.
+router.post('/organizations/:id/access-grants', async (req, res, next) => {
+  try {
+    const organizationId = req.params.id;
+    const months = req.body.months === undefined ? 12 : req.body.months;
+    const reason = req.body.reason;
+
+    const errors = validateGrantInput({ months, reason });
+    if (errors.length > 0) {
+      return res.status(400).json({ error: errors.join('; ') });
+    }
+
+    const { data: org, error: orgError } = await supabase
+      .from('organizations')
+      .select('id, name')
+      .eq('id', organizationId)
+      .maybeSingle();
+    if (orgError) throw orgError;
+    if (!org) return res.status(404).json({ error: 'Organization not found' });
+
+    const existingActiveGrant = await getActiveGrantForOrg(organizationId);
+    if (existingActiveGrant) {
+      return res.status(409).json({
+        error: `${org.name} already has an active grant (expires ${existingActiveGrant.expires_at}). Revoke it before issuing a new one.`,
+        code: 'ACTIVE_GRANT_EXISTS',
+      });
+    }
+
+    const startsAt = new Date();
+    const expiresAt = new Date(startsAt);
+    expiresAt.setUTCMonth(expiresAt.getUTCMonth() + Number(months));
+
+    const { data: grant, error: insertError } = await supabase
+      .from('manual_access_grants')
+      .insert({
+        organization_id: organizationId,
+        granted_by_user_id: req.user.id,
+        reason: reason.trim(),
+        starts_at: startsAt.toISOString(),
+        expires_at: expiresAt.toISOString(),
+      })
+      .select()
+      .single();
+    if (insertError) throw insertError;
+
+    await logPlatformAction({
+      actorUserId: req.user.id,
+      action: 'access_grant.created',
+      targetOrganizationId: organizationId,
+      metadata: { grant_id: grant.id, months: Number(months), reason: grant.reason, expires_at: grant.expires_at },
+    });
+
+    res.status(201).json(grant);
+  } catch (err) { next(err); }
+});
+
+// POST /api/platform/access-grants/:grantId/revoke
+// Cuts off a manual grant immediately (sets revoked_at/revoked_by) —
+// access checks re-evaluate on the next request, no separate "sync" step
+// needed since nothing caches this. Revoking an already-revoked or
+// already-expired grant is a no-op that still succeeds, since the end
+// state the caller wants ("this grant no longer confers access") already
+// holds either way.
+router.post('/access-grants/:grantId/revoke', async (req, res, next) => {
+  try {
+    const { data: grant, error: fetchError } = await supabase
+      .from('manual_access_grants')
+      .select('id, organization_id, revoked_at')
+      .eq('id', req.params.grantId)
+      .maybeSingle();
+    if (fetchError) throw fetchError;
+    if (!grant) return res.status(404).json({ error: 'Grant not found' });
+
+    if (grant.revoked_at) {
+      return res.json(grant);
+    }
+
+    const { data: updated, error: updateError } = await supabase
+      .from('manual_access_grants')
+      .update({ revoked_at: new Date().toISOString(), revoked_by_user_id: req.user.id })
+      .eq('id', req.params.grantId)
+      .select()
+      .single();
+    if (updateError) throw updateError;
+
+    await logPlatformAction({
+      actorUserId: req.user.id,
+      action: 'access_grant.revoked',
+      targetOrganizationId: grant.organization_id,
+      metadata: { grant_id: grant.id },
+    });
+
+    res.json(updated);
   } catch (err) { next(err); }
 });
 

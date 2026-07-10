@@ -2,6 +2,14 @@ const express  = require('express');
 const router   = express.Router();
 const Anthropic = require('@anthropic-ai/sdk');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { getActiveGrantForOrg } = require('../services/accessGrants');
+// Service-role client, used ONLY to check manual_access_grants below —
+// that table has RLS enabled with no policies (see its migration), so
+// req.userClient would silently see zero rows even for a real active
+// grant. Safe here because the org id passed in is always
+// req.user.organization_id (the caller's own org from their verified
+// session), never client-supplied input.
+const supabase = require('../services/supabase');
 
 router.use(requireAuth);
 router.use(requireRole('admin', 'staff'));
@@ -13,10 +21,16 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 // instead of a "resume?" banner for something from days ago.
 const RESUME_WINDOW_HOURS = 24;
 
-// Gate: the org must have purchased the add-on. Separate from the role
-// check above — an admin in a non-subscribed org still gets blocked here,
-// same spirit as the seat_limit check in users.js gating on a plan
-// attribute rather than a role.
+// Gate: the org must have purchased the add-on — OR have an active manual
+// access grant (see accessGrants.js). Expo Pilot / beta testers get full
+// platform access via a grant, which is meant to include Prospect Finder
+// too, not just the base plan; this is the same "grant is equivalent to
+// an active paid subscription" precedence used everywhere else, just
+// applied to this add-on flag instead of plan_status.
+//
+// Separate from the role check above — an admin in a non-subscribed,
+// non-granted org still gets blocked here, same spirit as the seat_limit
+// check in users.js gating on a plan attribute rather than a role.
 async function requireProspectFinderEnabled(req, res, next) {
   try {
     const { data: org, error } = await req.userClient
@@ -26,10 +40,12 @@ async function requireProspectFinderEnabled(req, res, next) {
       .single();
 
     if (error) throw error;
-    if (!org?.prospect_finder_enabled) {
-      return res.status(403).json({ error: 'Prospect Finder is not enabled for your organization. Contact support to add it.' });
-    }
-    next();
+    if (org?.prospect_finder_enabled) return next();
+
+    const grant = await getActiveGrantForOrg(req.user.organization_id, supabase);
+    if (grant) return next();
+
+    return res.status(403).json({ error: 'Prospect Finder is not enabled for your organization. Contact support to add it.' });
   } catch (err) { next(err); }
 }
 router.use(requireProspectFinderEnabled);
