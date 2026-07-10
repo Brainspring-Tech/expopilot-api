@@ -433,4 +433,26 @@ router.patch('/assign/:id', requireRole('admin'), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /api/users/assign/mine?conference_id=xxx — self-scoped travel/
+// lodging lookup for the PWA's read-only Travel screen. Unlike the
+// GET embedded in /api/conferences/:id (admin-facing, returns every
+// staff member's assignment for that conference), this always forces
+// user_id = req.user.id with no admin override — it's the caller's own
+// trips by design, same idea as GET /api/shifts with no user_id passed.
+router.get('/assign/mine', async (req, res, next) => {
+  try {
+    let query = req.userClient
+      .from('staff_assignments')
+      .select('*, conferences(name, venue, city, state, start_date, end_date)')
+      .eq('user_id', req.user.id)
+      .order('start_date', { ascending: true, foreignTable: 'conferences' });
+
+    if (req.query.conference_id) query = query.eq('conference_id', req.query.conference_id);
+
+    const { data, error } = await query;
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
 module.exports = router;
