@@ -5,7 +5,13 @@ const { requireAuth } = require('../middleware/auth');
 router.use(requireAuth);
 
 const VALID_TYPES = ['bug', 'idea', 'question', 'praise'];
-const VALID_AREAS = ['leads', 'conferences', 'prep', 'dashboard', 'other'];
+// PWA areas (leads/conferences/prep/dashboard/other) + admin console
+// areas (assets/tasks/expenses/roi/users/settings/prospects/platform) —
+// see the "expand feedback areas" migration for the matching DB constraint.
+const VALID_AREAS = [
+  'leads', 'conferences', 'prep', 'dashboard', 'other',
+  'assets', 'tasks', 'expenses', 'roi', 'users', 'settings', 'prospects', 'platform',
+];
 
 // POST /api/feedback — any authenticated user, from the PWA's feedback
 // widget. organization_id and user_id always come from the session
