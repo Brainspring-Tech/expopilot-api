@@ -144,3 +144,8 @@ The JWT comes from Supabase Auth on the frontend (`supabase.auth.getSession()`).
 | PATCH | `/api/users/:id/role` | admin | Change user role |
 | POST | `/api/users/assign` | admin | Assign staff to conference |
 | DELETE | `/api/users/assign` | admin | Remove staff from conference |
+
+### Feedback
+| Method | Path | Role | Description |
+|---|---|---|---|
+| POST | `/api/feedback` | any | Submit feedback from the PWA's feedback widget |
