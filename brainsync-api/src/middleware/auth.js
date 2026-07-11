@@ -44,7 +44,7 @@ async function requireAuth(req, res, next) {
   // it's not org-scoped like admin/staff/lead_capture are.
   const { data: profile } = await verifier
     .from('users')
-    .select('id, full_name, email, role, organization_id, is_platform_operator, job_title, phone, avatar_url')
+    .select('id, full_name, email, role, organization_id, is_platform_operator, job_title, phone, avatar_url, notification_prefs')
     .eq('auth_id', user.id)
     .single();
 
@@ -69,7 +69,7 @@ async function authenticateApiKey(rawKey, req, res, next) {
 
   const { data: apiKey, error } = await verifier
     .from('api_keys')
-    .select('id, permission, enabled, users!api_keys_shadow_user_id_fkey(id, auth_id, full_name, email, role, organization_id, is_platform_operator, job_title, phone, avatar_url)')
+    .select('id, permission, enabled, users!api_keys_shadow_user_id_fkey(id, auth_id, full_name, email, role, organization_id, is_platform_operator, job_title, phone, avatar_url, notification_prefs)')
     .eq('key_hash', hashApiKey(rawKey))
     .maybeSingle();
 

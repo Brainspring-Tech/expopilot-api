@@ -1,6 +1,25 @@
 const express  = require('express');
 const router   = express.Router();
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { sendTaskAssignmentAlert } = require('../services/email');
+const { notifyIfEnabled } = require('../services/notifications');
+
+async function notifyTaskAssigned(req, { assignedTo, taskTitle, conferenceId, dueDate }) {
+  if (!assignedTo) return;
+  const { data: conf } = await req.userClient
+    .from('conferences')
+    .select('name')
+    .eq('id', conferenceId)
+    .single();
+
+  notifyIfEnabled(assignedTo, 'task_assignment', recipient => sendTaskAssignmentAlert({
+    staffEmail: recipient.email,
+    staffName: recipient.full_name,
+    taskTitle,
+    conferenceName: conf?.name || 'a conference',
+    dueDate,
+  }));
+}
 
 router.use(requireAuth);
 
@@ -44,6 +63,8 @@ router.post('/', async (req, res, next) => {
 
     if (error) throw error;
     res.status(201).json(data);
+
+    notifyTaskAssigned(req, { assignedTo: assigned_to, taskTitle: title, conferenceId: conference_id, dueDate: due_date });
   } catch (err) { next(err); }
 });
 
@@ -61,6 +82,19 @@ router.patch('/:id', async (req, res, next) => {
     // Auto-stamp completed_at when marking done
     if (updates.status === 'done') updates.completed_at = new Date().toISOString();
 
+    // Pre-update snapshot — the route has no other way to tell "assigned_to
+    // changed to someone new" from "assigned_to was already them" (e.g. an
+    // edit to just the due date), and only the former should re-notify.
+    let previousAssignedTo;
+    if ('assigned_to' in updates) {
+      const { data: before } = await req.userClient
+        .from('tasks')
+        .select('assigned_to')
+        .eq('id', req.params.id)
+        .maybeSingle();
+      previousAssignedTo = before?.assigned_to;
+    }
+
     const { data, error } = await req.userClient
       .from('tasks')
       .update(updates)
@@ -71,6 +105,10 @@ router.patch('/:id', async (req, res, next) => {
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'Task not found' });
     res.json(data);
+
+    if ('assigned_to' in updates && data.assigned_to && data.assigned_to !== previousAssignedTo) {
+      notifyTaskAssigned(req, { assignedTo: data.assigned_to, taskTitle: data.title, conferenceId: data.conference_id, dueDate: data.due_date });
+    }
   } catch (err) { next(err); }
 });
 

@@ -2,6 +2,42 @@ const express = require('express');
 const router  = express.Router();
 const { requireAuth, requireRole } = require('../middleware/auth');
 const PDFDocument = require('pdfkit');
+const { sendDiscussionCommentAlert } = require('../services/email');
+const { notifyIfEnabled } = require('../services/notifications');
+
+// Recipients for a new discussion post = staff assigned to this
+// conference UNION org admins (the schema has no per-conference admin,
+// so "admin of" a conference maps to org-level role='admin') — minus the
+// comment's own author.
+async function notifyDiscussionPost(req, { conferenceId, authorId, authorName, commentBody }) {
+  const { data: conf } = await req.userClient
+    .from('conferences')
+    .select('name, organization_id')
+    .eq('id', conferenceId)
+    .single();
+  if (!conf) return;
+
+  const [{ data: assignments }, { data: admins }] = await Promise.all([
+    req.userClient.from('staff_assignments').select('user_id').eq('conference_id', conferenceId),
+    req.userClient.from('users').select('id').eq('organization_id', conf.organization_id).eq('role', 'admin'),
+  ]);
+
+  const recipientIds = new Set([
+    ...(assignments || []).map(a => a.user_id),
+    ...(admins || []).map(a => a.id),
+  ]);
+  recipientIds.delete(authorId);
+
+  for (const userId of recipientIds) {
+    notifyIfEnabled(userId, 'discussion_comment', recipient => sendDiscussionCommentAlert({
+      staffEmail: recipient.email,
+      staffName: recipient.full_name,
+      conferenceName: conf.name,
+      authorName,
+      commentBody,
+    }));
+  }
+}
 
 router.use(requireAuth);
 
@@ -253,6 +289,13 @@ router.post('/:id/comments', async (req, res, next) => {
 
     if (error) throw error;
     res.status(201).json(data);
+
+    notifyDiscussionPost(req, {
+      conferenceId: req.params.id,
+      authorId: req.user.id,
+      authorName: req.user.full_name,
+      commentBody: body.trim(),
+    });
   } catch (err) { next(err); }
 });
 

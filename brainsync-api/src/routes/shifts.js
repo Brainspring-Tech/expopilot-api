@@ -1,6 +1,8 @@
 const express  = require('express');
 const router   = express.Router();
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { sendShiftCalendarInvite } = require('../services/email');
+const { notifyIfEnabled } = require('../services/notifications');
 
 router.use(requireAuth);
 
@@ -68,6 +70,24 @@ router.post('/', requireRole('admin'), async (req, res, next) => {
 
     if (error) throw error;
     res.status(201).json(data);
+
+    const { data: conf } = await req.userClient
+      .from('conferences')
+      .select('name, venue, timezone')
+      .eq('id', conference_id)
+      .single();
+
+    notifyIfEnabled(user_id, 'shift_calendar_invite', recipient => sendShiftCalendarInvite({
+      shiftId: data.id,
+      staffEmail: recipient.email,
+      staffName: recipient.full_name,
+      conferenceName: conf?.name || 'a conference',
+      venue: conf?.venue,
+      shiftDate: shift_date,
+      startTime: start_time,
+      endTime: end_time,
+      timezone: conf?.timezone || 'America/Chicago',
+    }));
   } catch (err) { next(err); }
 });
 

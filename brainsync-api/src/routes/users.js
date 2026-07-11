@@ -2,6 +2,8 @@ const express  = require('express');
 const router   = express.Router();
 const supabase = require('../services/supabase');
 const { requireAuth, requireRole, blockApiKey } = require('../middleware/auth');
+const { sendConferenceAssignmentAlert } = require('../services/email');
+const { notifyIfEnabled } = require('../services/notifications');
 
 router.use(requireAuth);
 // User management (invite/delete/role changes, including this org's own
@@ -37,6 +39,8 @@ router.patch('/me/activate', async (req, res, next) => {
 // allow role or email here — email changes go through Supabase Auth's
 // own verified-email-change flow, not this endpoint, and role is admin-
 // only (see PATCH /:id/role below).
+const NOTIFICATION_PREF_KEYS = ['conference_assignment', 'task_assignment', 'discussion_comment', 'shift_calendar_invite'];
+
 router.patch('/me', async (req, res, next) => {
   try {
     const allowed = ['full_name', 'job_title', 'phone', 'avatar_url'];
@@ -44,11 +48,23 @@ router.patch('/me', async (req, res, next) => {
       Object.entries(req.body).filter(([k]) => allowed.includes(k))
     );
 
+    // Merged (not replaced wholesale) onto the caller's current prefs, and
+    // filtered to only the known boolean keys — protects existing toggles
+    // from vanishing if a client ever sends a partial or malformed object.
+    if (req.body.notification_prefs && typeof req.body.notification_prefs === 'object') {
+      const incoming = req.body.notification_prefs;
+      const merged = { ...(req.user.notification_prefs || {}) };
+      for (const key of NOTIFICATION_PREF_KEYS) {
+        if (typeof incoming[key] === 'boolean') merged[key] = incoming[key];
+      }
+      updates.notification_prefs = merged;
+    }
+
     const { data, error } = await req.userClient
       .from('users')
       .update(updates)
       .eq('id', req.user.id)
-      .select('id, full_name, email, role, job_title, phone, avatar_url')
+      .select('id, full_name, email, role, job_title, phone, avatar_url, notification_prefs')
       .single();
 
     if (error) throw error;
@@ -386,6 +402,16 @@ router.post('/assign', requireRole('admin'), async (req, res, next) => {
       return res.status(400).json({ error: 'That user is not in your organization' });
     }
 
+    // Pre-check so the "you've been assigned" email only fires on a
+    // genuinely new assignment, not on every subsequent edit (role/notes
+    // change) that also flows through this same upsert.
+    const { data: existing } = await req.userClient
+      .from('staff_assignments')
+      .select('id')
+      .eq('conference_id', conference_id)
+      .eq('user_id', user_id)
+      .maybeSingle();
+
     const { data, error } = await req.userClient
       .from('staff_assignments')
       .upsert({ conference_id, user_id, role: role || 'booth staff', shift_notes },
@@ -395,6 +421,22 @@ router.post('/assign', requireRole('admin'), async (req, res, next) => {
 
     if (error) throw error;
     res.status(201).json(data);
+
+    if (!existing) {
+      const { data: conf } = await req.userClient
+        .from('conferences')
+        .select('name, start_date')
+        .eq('id', conference_id)
+        .single();
+
+      notifyIfEnabled(user_id, 'conference_assignment', recipient => sendConferenceAssignmentAlert({
+        staffEmail: recipient.email,
+        staffName: recipient.full_name,
+        conferenceName: conf?.name || 'a conference',
+        conferenceDate: conf?.start_date || 'TBD',
+        role: role || 'booth staff',
+      }));
+    }
   } catch (err) { next(err); }
 });
 
