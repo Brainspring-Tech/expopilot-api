@@ -1,73 +1,45 @@
-const axios = require('axios');
+const nodemailer = require('nodemailer');
 const { DateTime } = require('luxon');
 
-let _token = null;
-let _tokenExpiry = 0;
-
-async function getAccessToken() {
-  if (_token && Date.now() < _tokenExpiry - 60000) return _token;
-
-  const params = new URLSearchParams({
-    grant_type:    'client_credentials',
-    client_id:     process.env.MS_CLIENT_ID,
-    client_secret: process.env.MS_CLIENT_SECRET,
-    scope:         'https://graph.microsoft.com/.default',
+// Sends as noreply@getexpopilot.com via Google Workspace SMTP (app
+// password), not Microsoft Graph — that mailbox lives on Google
+// Workspace, and Graph has no authority over mailboxes outside the
+// Entra ID tenant it's registered in, so it was never a viable path for
+// this specific sender address.
+let _transporter = null;
+function getTransporter() {
+  if (_transporter) return _transporter;
+  _transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.GMAIL_SENDER_EMAIL,
+      pass: process.env.GMAIL_APP_PASSWORD,
+    },
   });
-
-  try {
-    const res = await axios.post(
-      `https://login.microsoftonline.com/${process.env.MS_TENANT_ID}/oauth2/v2.0/token`,
-      params.toString(),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-    );
-
-    _token       = res.data.access_token;
-    _tokenExpiry = Date.now() + (res.data.expires_in * 1000);
-    return _token;
-  } catch (err) {
-    // Azure AD's token endpoint returns 400 (not 401) for most credential
-    // problems (expired/wrong client secret, wrong tenant, app not
-    // consented, etc) — err.message alone ("Request failed with status
-    // code 400") hides the actual reason, which lives in the response body.
-    const detail = err.response?.data?.error_description || err.response?.data?.error || err.message;
-    console.error('[email] failed to acquire Graph access token:', detail);
-    throw new Error(`Graph auth failed: ${detail}`);
-  }
+  return _transporter;
 }
 
-async function sendEmail({ to, subject, body, attachments }) {
-  const token = await getAccessToken();
-
-  const message = {
-    message: {
-      subject,
-      body:       { contentType: 'HTML', content: body },
-      toRecipients: Array.isArray(to)
-        ? to.map(addr => ({ emailAddress: { address: addr } }))
-        : [{ emailAddress: { address: to } }],
-      // Graph file attachments — each item: { name, contentType, contentBytes (base64) }.
-      ...(attachments?.length ? {
-        attachments: attachments.map(a => ({
-          '@odata.type': '#microsoft.graph.fileAttachment',
-          name: a.name,
-          contentType: a.contentType,
-          contentBytes: a.contentBytes,
-        })),
-      } : {}),
-    },
-    saveToSentItems: false,
-  };
+async function sendEmail({ to, subject, body, attachments, icalEvent }) {
+  const transporter = getTransporter();
 
   try {
-    await axios.post(
-      `https://graph.microsoft.com/v1.0/users/${process.env.MS_SENDER_EMAIL}/sendMail`,
-      message,
-      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
-    );
+    await transporter.sendMail({
+      from: `"ExpoPilot" <${process.env.GMAIL_SENDER_EMAIL}>`,
+      to: Array.isArray(to) ? to.join(', ') : to,
+      subject,
+      html: body,
+      ...(attachments?.length ? {
+        attachments: attachments.map(a => ({
+          filename: a.name,
+          content: a.contentBytes ? Buffer.from(a.contentBytes, 'base64') : a.content,
+          contentType: a.contentType,
+        })),
+      } : {}),
+      ...(icalEvent ? { icalEvent } : {}),
+    });
   } catch (err) {
-    const detail = err.response?.data?.error?.message || err.message;
-    console.error('[email] Graph sendMail failed:', detail, err.response?.data ? JSON.stringify(err.response.data) : '');
-    throw new Error(`Graph sendMail failed: ${detail}`);
+    console.error('[email] send failed:', err.message);
+    throw new Error(`Email send failed: ${err.message}`);
   }
 
   console.log(`[email] sent "${subject}" to ${Array.isArray(to) ? to.join(', ') : to}`);
@@ -82,8 +54,8 @@ async function sendConferenceAssignmentAlert({ staffEmail, staffName, conference
     body: `
       <p>Hi ${staffName},</p>
       <p>You've been assigned to <strong>${conferenceName}</strong> on <strong>${conferenceDate}</strong> as <strong>${role}</strong>.</p>
-      <p>Log in to BrainSync to view your tasks, assets, and shift details.</p>
-      <p>— Brainspring Team</p>
+      <p>Log in to ExpoPilot to view your tasks, assets, and shift details.</p>
+      <p>— ExpoPilot Team</p>
     `,
   });
 }
@@ -98,8 +70,8 @@ async function sendDailyLeadSummary({ adminEmail, conferenceName, totalLeads, ho
         <li>Total leads captured: <strong>${totalLeads}</strong></li>
         <li>Hot leads (score ≥ 4): <strong>${hotLeads}</strong></li>
       </ul>
-      <p>Log in to BrainSync to review and assign follow-ups.</p>
-      <p>— BrainSync</p>
+      <p>Log in to ExpoPilot to review and assign follow-ups.</p>
+      <p>— ExpoPilot Team</p>
     `,
   });
 }
@@ -112,8 +84,8 @@ async function sendTaskAssignmentAlert({ staffEmail, staffName, taskTitle, confe
       <p>Hi ${staffName},</p>
       <p>You've been assigned a new task on <strong>${conferenceName}</strong>:</p>
       <p><strong>${taskTitle}</strong>${dueDate ? ` — due ${dueDate}` : ''}</p>
-      <p>Log in to BrainSync to view the full task details.</p>
-      <p>— Brainspring Team</p>
+      <p>Log in to ExpoPilot to view the full task details.</p>
+      <p>— ExpoPilot Team</p>
     `,
   });
 }
@@ -126,8 +98,8 @@ async function sendDiscussionCommentAlert({ staffEmail, staffName, conferenceNam
       <p>Hi ${staffName},</p>
       <p><strong>${authorName}</strong> posted in the discussion board for <strong>${conferenceName}</strong>:</p>
       <p style="padding:12px;background:#f5f4f0;border-radius:8px;">${commentBody}</p>
-      <p>Log in to BrainSync to reply.</p>
-      <p>— Brainspring Team</p>
+      <p>Log in to ExpoPilot to reply.</p>
+      <p>— ExpoPilot Team</p>
     `,
   });
 }
@@ -152,7 +124,7 @@ function buildShiftICS({ shiftId, staffEmail, staffName, organizerEmail, confere
 
   const summary  = escapeICSText(`Shift — ${conferenceName}`);
   const location = escapeICSText(venue || conferenceName);
-  const description = escapeICSText(`Booth shift for ${conferenceName}. Log in to BrainSync for full details.`);
+  const description = escapeICSText(`Booth shift for ${conferenceName}. Log in to ExpoPilot for full details.`);
 
   const lines = [
     'BEGIN:VCALENDAR',
@@ -180,7 +152,7 @@ function buildShiftICS({ shiftId, staffEmail, staffName, organizerEmail, confere
 }
 
 async function sendShiftCalendarInvite({ shiftId, staffEmail, staffName, conferenceName, venue, shiftDate, startTime, endTime, timezone, organizerEmail }) {
-  const organizer = organizerEmail || process.env.MS_SENDER_EMAIL;
+  const organizer = organizerEmail || process.env.GMAIL_SENDER_EMAIL;
   const ics = buildShiftICS({ shiftId, staffEmail, staffName, organizerEmail: organizer, conferenceName, venue, shiftDate, startTime, endTime, timezone });
 
   await sendEmail({
@@ -190,13 +162,16 @@ async function sendShiftCalendarInvite({ shiftId, staffEmail, staffName, confere
       <p>Hi ${staffName},</p>
       <p>You've been scheduled for a shift at <strong>${conferenceName}</strong> on <strong>${shiftDate}</strong> from <strong>${startTime}</strong> to <strong>${endTime}</strong>.</p>
       <p>Open the attached invite to add it to your calendar.</p>
-      <p>— Brainspring Team</p>
+      <p>— ExpoPilot Team</p>
     `,
-    attachments: [{
-      name: 'invite.ics',
-      contentType: 'text/calendar',
-      contentBytes: Buffer.from(ics, 'utf-8').toString('base64'),
-    }],
+    // Nodemailer's dedicated icalEvent option (rather than a generic file
+    // attachment) is what gets Gmail/Outlook to render this as an actual
+    // actionable invite (Yes/No/Maybe) instead of just a downloadable file.
+    icalEvent: {
+      filename: 'invite.ics',
+      method: 'REQUEST',
+      content: ics,
+    },
   });
 }
 
