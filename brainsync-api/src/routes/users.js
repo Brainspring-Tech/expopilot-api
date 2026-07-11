@@ -1,9 +1,14 @@
 const express  = require('express');
 const router   = express.Router();
 const supabase = require('../services/supabase');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, blockApiKey } = require('../middleware/auth');
 
 router.use(requireAuth);
+// User management (invite/delete/role changes, including this org's own
+// shadow-user bookkeeping for API keys) is never reachable via an API
+// key, regardless of its permission level — same reasoning as
+// apiKeys.js's own blockApiKey guard.
+router.use(blockApiKey);
 
 // GET /api/users/me — current user profile
 router.get('/me', async (req, res) => {

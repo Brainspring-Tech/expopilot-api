@@ -21,6 +21,7 @@ const platformRouter      = require('./routes/platform');
 const integrationsRouter  = require('./routes/integrations');
 const prospectFinderRouter = require('./routes/prospectFinder');
 const feedbackRouter      = require('./routes/feedback');
+const apiKeysRouter       = require('./routes/apiKeys');
 
 const { startSyncJob } = require('./jobs/hubspotSync');
 const { startCrmSyncJob } = require('./jobs/crmSync');
@@ -100,6 +101,7 @@ app.use('/api/platform',    platformRouter);
 app.use('/api/integrations', integrationsRouter);
 app.use('/api/prospect-finder', prospectFinderRouter);
 app.use('/api/feedback',    feedbackRouter);
+app.use('/api/api-keys',    apiKeysRouter);
  
 // ── 404 handler ──────────────────────────────────────────────────
 app.use((req, res) => {
