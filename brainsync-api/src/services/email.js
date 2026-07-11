@@ -1,18 +1,27 @@
 const nodemailer = require('nodemailer');
 const { DateTime } = require('luxon');
 
-// Sends as noreply@getexpopilot.com via Google Workspace SMTP (app
-// password), not Microsoft Graph — that mailbox lives on Google
-// Workspace, and Graph has no authority over mailboxes outside the
-// Entra ID tenant it's registered in, so it was never a viable path for
-// this specific sender address.
+// Sends via Google Workspace SMTP (app password), not Microsoft Graph —
+// the visible sender lives on Google Workspace, and Graph has no
+// authority over mailboxes outside the Entra ID tenant it's registered
+// in, so it was never a viable path for this address.
+//
+// GMAIL_SMTP_USER is who actually authenticates — if the visible sender
+// (GMAIL_FROM_ADDRESS) is an alias rather than a real standalone
+// mailbox, aliases have no login/password/2FA of their own, so auth has
+// to happen as the real underlying account instead. GMAIL_FROM_ADDRESS
+// falls back to GMAIL_SMTP_USER when they're the same (a real mailbox,
+// not an alias).
+const SMTP_USER    = process.env.GMAIL_SMTP_USER;
+const FROM_ADDRESS = process.env.GMAIL_FROM_ADDRESS || SMTP_USER;
+
 let _transporter = null;
 function getTransporter() {
   if (_transporter) return _transporter;
   _transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
-      user: process.env.GMAIL_SENDER_EMAIL,
+      user: SMTP_USER,
       pass: process.env.GMAIL_APP_PASSWORD,
     },
   });
@@ -24,7 +33,7 @@ async function sendEmail({ to, subject, body, attachments, icalEvent }) {
 
   try {
     await transporter.sendMail({
-      from: `"ExpoPilot" <${process.env.GMAIL_SENDER_EMAIL}>`,
+      from: `"ExpoPilot" <${FROM_ADDRESS}>`,
       to: Array.isArray(to) ? to.join(', ') : to,
       subject,
       html: body,
@@ -152,7 +161,7 @@ function buildShiftICS({ shiftId, staffEmail, staffName, organizerEmail, confere
 }
 
 async function sendShiftCalendarInvite({ shiftId, staffEmail, staffName, conferenceName, venue, shiftDate, startTime, endTime, timezone, organizerEmail }) {
-  const organizer = organizerEmail || process.env.GMAIL_SENDER_EMAIL;
+  const organizer = organizerEmail || FROM_ADDRESS;
   const ics = buildShiftICS({ shiftId, staffEmail, staffName, organizerEmail: organizer, conferenceName, venue, shiftDate, startTime, endTime, timezone });
 
   await sendEmail({
