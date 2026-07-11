@@ -32,6 +32,7 @@ async function notifyDiscussionPost(req, { conferenceId, authorId, authorName, c
     notifyIfEnabled(userId, 'discussion_comment', recipient => sendDiscussionCommentAlert({
       staffEmail: recipient.email,
       staffName: recipient.full_name,
+      conferenceId,
       conferenceName: conf.name,
       authorName,
       commentBody,

@@ -16,6 +16,7 @@ async function notifyTaskAssigned(req, { assignedTo, taskTitle, conferenceId, du
     staffEmail: recipient.email,
     staffName: recipient.full_name,
     taskTitle,
+    conferenceId,
     conferenceName: conf?.name || 'a conference',
     dueDate,
   }));

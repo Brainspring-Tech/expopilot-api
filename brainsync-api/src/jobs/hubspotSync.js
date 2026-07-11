@@ -64,6 +64,7 @@ async function sendDailyConferenceSummaries() {
     for (const email of adminEmails) {
       await sendDailyLeadSummary({
         adminEmail:     email,
+        conferenceId:   conf.id,
         conferenceName: conf.name,
         totalLeads:     total || 0,
         hotLeads:       hot   || 0,
