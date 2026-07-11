@@ -341,44 +341,6 @@ router.patch('/:id/role', requireRole('admin'), async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// DELETE /api/users/:id — admin: remove a user's access. Switched to
-// req.userClient so this can only ever target a user in the caller's
-// own organization — previously used the service-role client with no
-// organization check at all.
-router.delete('/:id', requireRole('admin'), async (req, res, next) => {
-  try {
-    const { data: userRow, error: lookupError } = await req.userClient
-      .from('users')
-      .select('auth_id')
-      .eq('id', req.params.id)
-      .maybeSingle();
-
-    if (lookupError) throw lookupError;
-    if (!userRow) return res.status(404).json({ error: 'User not found' });
-
-    // Always remove the profile row — this is what actually gates access
-    // throughout the app (RLS, role checks, etc).
-    const { error: deleteError } = await req.userClient
-      .from('users')
-      .delete()
-      .eq('id', req.params.id);
-
-    if (deleteError) throw deleteError;
-
-    // Best-effort: also remove the underlying auth identity so they can't
-    // log in at all. If this fails, the profile row is already gone, so
-    // they're effectively locked out regardless — log it, don't fail.
-    if (userRow?.auth_id) {
-      const { error: authDeleteError } = await supabase.auth.admin.deleteUser(userRow.auth_id);
-      if (authDeleteError) {
-        console.warn(`[users] auth.admin.deleteUser failed for ${userRow.auth_id}:`, authDeleteError.message);
-      }
-    }
-
-    res.status(204).send();
-  } catch (err) { next(err); }
-});
-
 // POST /api/users/assign — assign staff to a conference. Both the
 // conference and the target user must belong to the caller's org.
 // RLS on staff_assignments already constrains conference_id to the
@@ -499,6 +461,48 @@ router.get('/assign/mine', async (req, res, next) => {
     const { data, error } = await query;
     if (error) throw error;
     res.json(data);
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/users/:id — admin: remove a user's access. Switched to
+// req.userClient so this can only ever target a user in the caller's
+// own organization — previously used the service-role client with no
+// organization check at all.
+//
+// Must stay registered after every literal /assign* route above — as a
+// single-segment wildcard, it would otherwise shadow them (e.g. DELETE
+// /assign matching here first with req.params.id = "assign").
+router.delete('/:id', requireRole('admin'), async (req, res, next) => {
+  try {
+    const { data: userRow, error: lookupError } = await req.userClient
+      .from('users')
+      .select('auth_id')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (lookupError) throw lookupError;
+    if (!userRow) return res.status(404).json({ error: 'User not found' });
+
+    // Always remove the profile row — this is what actually gates access
+    // throughout the app (RLS, role checks, etc).
+    const { error: deleteError } = await req.userClient
+      .from('users')
+      .delete()
+      .eq('id', req.params.id);
+
+    if (deleteError) throw deleteError;
+
+    // Best-effort: also remove the underlying auth identity so they can't
+    // log in at all. If this fails, the profile row is already gone, so
+    // they're effectively locked out regardless — log it, don't fail.
+    if (userRow?.auth_id) {
+      const { error: authDeleteError } = await supabase.auth.admin.deleteUser(userRow.auth_id);
+      if (authDeleteError) {
+        console.warn(`[users] auth.admin.deleteUser failed for ${userRow.auth_id}:`, authDeleteError.message);
+      }
+    }
+
+    res.status(204).send();
   } catch (err) { next(err); }
 });
 
