@@ -1,0 +1,557 @@
+openapi: 3.0.3
+info:
+  title: ExpoPilot API
+  version: "1.0.0"
+  description: |
+    Read and write your organization's ExpoPilot data — conferences, leads,
+    booth assets/shipping, tasks, and staff shifts — using an API key from
+    **Settings → API Keys** in the admin console.
+
+    ## Authentication
+    Send your key as a bearer token on every request:
+
+    ```
+    Authorization: Bearer epk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    ```
+
+    Every key is scoped to a single organization and has one of two
+    permission levels, set when the key is created:
+
+    - **Read-only** — `GET` requests only. Any other method returns `403`.
+    - **Read & write** — full access to every endpoint below, equivalent
+      to an admin user in that organization.
+
+    All endpoints are organization-scoped automatically — you'll only ever
+    see or affect your own organization's data, regardless of what IDs
+    you pass in.
+
+    ## Rate limits
+    120 requests/minute per IP, shared with the rest of the API.
+
+    ## Endpoints not listed here
+    User management, billing, and API key management are intentionally
+    **not** available to API keys, even on a read & write key — those stay
+    admin-console-only.
+  contact:
+    name: ExpoPilot Support
+servers:
+  - url: https://expopilot-api.onrender.com
+    description: Production
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: epk_...
+      description: An API key created in Settings → API Keys, sent as a bearer token.
+  parameters:
+    ConferenceIdQuery:
+      name: conference_id
+      in: query
+      schema:
+        type: string
+        format: uuid
+      description: Restrict results to a single conference.
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      example:
+        error: "Invalid or expired token"
+    Conference:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        organization_id: { type: string, format: uuid }
+        name: { type: string }
+        venue: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        state: { type: string, nullable: true }
+        start_date: { type: string, format: date }
+        end_date: { type: string, format: date }
+        budget: { type: number, nullable: true }
+        status:
+          type: string
+          enum: [prospect, planning, confirmed, active, completed, cancelled]
+        notes: { type: string, nullable: true }
+        website_url: { type: string, nullable: true }
+        created_by: { type: string, format: uuid, nullable: true }
+    Lead:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        conference_id: { type: string, format: uuid }
+        captured_by: { type: string, format: uuid }
+        first_name: { type: string, nullable: true }
+        last_name: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        organization: { type: string, nullable: true, description: "The lead's company/organization — free text, not an ExpoPilot org id." }
+        title: { type: string, nullable: true }
+        grade_levels:
+          type: array
+          items: { type: string }
+        interest_tags:
+          type: array
+          items: { type: string }
+        score:
+          type: integer
+          minimum: 1
+          maximum: 5
+          default: 3
+        notes: { type: string, nullable: true }
+        badge_scan_data: { type: object, nullable: true }
+        captured_at: { type: string, format: date-time }
+        synced_to_hubspot: { type: boolean }
+    LeadInput:
+      type: object
+      required: [conference_id]
+      properties:
+        conference_id: { type: string, format: uuid }
+        first_name: { type: string }
+        last_name: { type: string }
+        email: { type: string }
+        phone: { type: string }
+        organization: { type: string }
+        title: { type: string }
+        grade_levels:
+          type: array
+          items: { type: string }
+        interest_tags:
+          type: array
+          items: { type: string }
+        score: { type: integer, minimum: 1, maximum: 5 }
+        notes: { type: string }
+        badge_scan_data: { type: object }
+        captured_at: { type: string, format: date-time, description: "Defaults to now if omitted — set this explicitly for offline-captured leads synced later." }
+    Asset:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        conference_id: { type: string, format: uuid }
+        catalog_id: { type: string, format: uuid, nullable: true }
+        name: { type: string }
+        category: { type: string, nullable: true }
+        quantity: { type: integer, default: 1 }
+        status: { type: string }
+        ship_by_date: { type: string, format: date, nullable: true }
+        return_by_date: { type: string, format: date, nullable: true }
+        shipping_carrier: { type: string, nullable: true }
+        tracking_number: { type: string, nullable: true }
+        return_carrier: { type: string, nullable: true }
+        return_tracking_number: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
+    AssetInput:
+      type: object
+      required: [conference_id, name]
+      properties:
+        conference_id: { type: string, format: uuid }
+        catalog_id: { type: string, format: uuid, description: "If set, name/category/notes are resolved from the catalog item instead of the values below." }
+        name: { type: string }
+        category: { type: string }
+        quantity: { type: integer }
+        ship_by_date: { type: string, format: date }
+        return_by_date: { type: string, format: date }
+        shipping_carrier: { type: string }
+        tracking_number: { type: string }
+        return_carrier: { type: string }
+        return_tracking_number: { type: string }
+        notes: { type: string }
+    Task:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        conference_id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        phase: { type: string, enum: [pre_show, onsite, post_show] }
+        status: { type: string, enum: [open, in_progress, done, blocked] }
+        assigned_to: { type: string, format: uuid, nullable: true }
+        due_date: { type: string, format: date, nullable: true }
+        is_important: { type: boolean }
+        completed_at: { type: string, format: date-time, nullable: true }
+    TaskInput:
+      type: object
+      required: [conference_id, title]
+      properties:
+        conference_id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string }
+        phase: { type: string, enum: [pre_show, onsite, post_show], default: pre_show }
+        assigned_to: { type: string, format: uuid }
+        due_date: { type: string, format: date }
+        is_important: { type: boolean }
+    Shift:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        conference_id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        shift_date: { type: string, format: date }
+        start_time: { type: string, example: "09:00" }
+        end_time: { type: string, example: "17:00" }
+        notes: { type: string, nullable: true }
+    ShiftInput:
+      type: object
+      required: [conference_id, user_id, shift_date, start_time, end_time]
+      properties:
+        conference_id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        shift_date: { type: string, format: date }
+        start_time: { type: string }
+        end_time: { type: string }
+        notes: { type: string }
+  responses:
+    Unauthorized:
+      description: Missing, invalid, expired, or disabled API key
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Read-only key used on a write request, or the endpoint isn't available to API keys at all
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Not found (or not visible to your organization)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+paths:
+  /api/conferences:
+    get:
+      summary: List conferences
+      tags: [Conferences]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string }
+          description: Comma-separated status filter, e.g. `active,confirmed`.
+        - name: exclude_status
+          in: query
+          schema: { type: string }
+          description: Comma-separated statuses to exclude, e.g. `prospect`.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Conference' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/conferences/{id}:
+    get:
+      summary: Get a single conference
+      tags: [Conferences]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Conference' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/leads:
+    get:
+      summary: List leads
+      tags: [Leads]
+      parameters:
+        - $ref: '#/components/parameters/ConferenceIdQuery'
+        - name: score
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 5 }
+          description: Only leads with this score or higher.
+        - name: synced
+          in: query
+          schema: { type: boolean }
+          description: Pass `false` to see only leads not yet synced to HubSpot.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Lead' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      summary: Capture a lead
+      tags: [Leads]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LeadInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Lead' }
+        '400': { description: Missing or invalid fields, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/leads/{id}:
+    get:
+      summary: Get a single lead, with its interactions and follow-ups
+      tags: [Leads]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Lead' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      summary: Update a lead
+      tags: [Leads]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Any subset of first_name, last_name, email, phone, organization, title, grade_levels, interest_tags, score, notes.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Lead' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/leads/batch:
+    post:
+      summary: Capture up to 200 leads in one request
+      tags: [Leads]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [leads]
+              properties:
+                leads:
+                  type: array
+                  maxItems: 200
+                  items: { $ref: '#/components/schemas/LeadInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  inserted: { type: integer }
+                  ids:
+                    type: array
+                    items: { type: string, format: uuid }
+        '400': { description: Missing/empty/oversized leads array, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/assets:
+    get:
+      summary: List booth assets / shipments
+      tags: [Assets]
+      parameters:
+        - $ref: '#/components/parameters/ConferenceIdQuery'
+        - name: status
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Asset' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      summary: Add a booth asset / shipment
+      tags: [Assets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssetInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Asset' }
+        '400': { description: Missing conference_id/name, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/assets/{id}:
+    patch:
+      summary: Update a booth asset / shipment (e.g. tracking info, status)
+      tags: [Assets]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Any subset of name, category, quantity, status, shipping_carrier, tracking_number, return_carrier, return_tracking_number, ship_by_date, return_by_date, notes.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Asset' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/tasks:
+    get:
+      summary: List tasks
+      tags: [Tasks]
+      parameters:
+        - $ref: '#/components/parameters/ConferenceIdQuery'
+        - name: phase
+          in: query
+          schema: { type: string, enum: [pre_show, onsite, post_show] }
+        - name: status
+          in: query
+          schema: { type: string, enum: [open, in_progress, done, blocked] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Task' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      summary: Create a task
+      tags: [Tasks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
+        '400': { description: Missing conference_id/title, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/tasks/{id}:
+    patch:
+      summary: Update a task
+      tags: [Tasks]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Any subset of title, description, phase, status, assigned_to, due_date, is_important. Setting status to "done" auto-stamps completed_at.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Task' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/shifts:
+    get:
+      summary: List staff shifts
+      tags: [Shifts]
+      parameters:
+        - $ref: '#/components/parameters/ConferenceIdQuery'
+        - name: user_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Shift' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      summary: Schedule a staff shift
+      tags: [Shifts]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ShiftInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Shift' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/shifts/{id}:
+    patch:
+      summary: Update a shift
+      tags: [Shifts]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Any subset of shift_date, start_time, end_time, notes.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Shift' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
