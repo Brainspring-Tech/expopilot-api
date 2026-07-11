@@ -14,15 +14,25 @@ async function getAccessToken() {
     scope:         'https://graph.microsoft.com/.default',
   });
 
-  const res = await axios.post(
-    `https://login.microsoftonline.com/${process.env.MS_TENANT_ID}/oauth2/v2.0/token`,
-    params.toString(),
-    { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-  );
+  try {
+    const res = await axios.post(
+      `https://login.microsoftonline.com/${process.env.MS_TENANT_ID}/oauth2/v2.0/token`,
+      params.toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
 
-  _token       = res.data.access_token;
-  _tokenExpiry = Date.now() + (res.data.expires_in * 1000);
-  return _token;
+    _token       = res.data.access_token;
+    _tokenExpiry = Date.now() + (res.data.expires_in * 1000);
+    return _token;
+  } catch (err) {
+    // Azure AD's token endpoint returns 400 (not 401) for most credential
+    // problems (expired/wrong client secret, wrong tenant, app not
+    // consented, etc) — err.message alone ("Request failed with status
+    // code 400") hides the actual reason, which lives in the response body.
+    const detail = err.response?.data?.error_description || err.response?.data?.error || err.message;
+    console.error('[email] failed to acquire Graph access token:', detail);
+    throw new Error(`Graph auth failed: ${detail}`);
+  }
 }
 
 async function sendEmail({ to, subject, body, attachments }) {
@@ -48,11 +58,17 @@ async function sendEmail({ to, subject, body, attachments }) {
     saveToSentItems: false,
   };
 
-  await axios.post(
-    `https://graph.microsoft.com/v1.0/users/${process.env.MS_SENDER_EMAIL}/sendMail`,
-    message,
-    { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
-  );
+  try {
+    await axios.post(
+      `https://graph.microsoft.com/v1.0/users/${process.env.MS_SENDER_EMAIL}/sendMail`,
+      message,
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+    );
+  } catch (err) {
+    const detail = err.response?.data?.error?.message || err.message;
+    console.error('[email] Graph sendMail failed:', detail, err.response?.data ? JSON.stringify(err.response.data) : '');
+    throw new Error(`Graph sendMail failed: ${detail}`);
+  }
 
   console.log(`[email] sent "${subject}" to ${Array.isArray(to) ? to.join(', ') : to}`);
 }
