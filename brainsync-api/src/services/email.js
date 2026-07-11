@@ -1,54 +1,86 @@
-const nodemailer = require('nodemailer');
+const { google } = require('googleapis');
+const MailComposer = require('nodemailer/lib/mail-composer');
 const { DateTime } = require('luxon');
 
-// Sends via Google Workspace SMTP (app password), not Microsoft Graph —
-// the visible sender lives on Google Workspace, and Graph has no
-// authority over mailboxes outside the Entra ID tenant it's registered
-// in, so it was never a viable path for this address.
+// Sends via the Gmail API using a Google Cloud service account with
+// domain-wide delegation — not SMTP/app-password, and not Microsoft
+// Graph. App passwords weren't available for this Workspace account
+// (blocked by org policy or Google's broader phase-out), and Graph has
+// no authority over mailboxes outside the Entra ID tenant it's
+// registered in, so neither was viable for a Google Workspace sender.
 //
-// GMAIL_SMTP_USER is who actually authenticates — if the visible sender
-// (GMAIL_FROM_ADDRESS) is an alias rather than a real standalone
-// mailbox, aliases have no login/password/2FA of their own, so auth has
-// to happen as the real underlying account instead. GMAIL_FROM_ADDRESS
-// falls back to GMAIL_SMTP_USER when they're the same (a real mailbox,
-// not an alias).
-const SMTP_USER    = process.env.GMAIL_SMTP_USER;
-const FROM_ADDRESS = process.env.GMAIL_FROM_ADDRESS || SMTP_USER;
+// GMAIL_IMPERSONATE_EMAIL is the real account the service account is
+// authorized to act as — if the visible sender (GMAIL_FROM_ADDRESS) is
+// an alias rather than a standalone mailbox, aliases can't be
+// impersonated directly, only the real underlying account can.
+// GMAIL_FROM_ADDRESS falls back to GMAIL_IMPERSONATE_EMAIL when they're
+// the same (a real mailbox, not an alias) — Gmail accepts the alias as
+// a valid From header as long as it's a registered alias of whichever
+// account is impersonated, same as picking it from the "Send as"
+// dropdown in Gmail's own UI would.
+const IMPERSONATE_EMAIL = process.env.GMAIL_IMPERSONATE_EMAIL;
+const FROM_ADDRESS      = process.env.GMAIL_FROM_ADDRESS || IMPERSONATE_EMAIL;
 
-let _transporter = null;
-function getTransporter() {
-  if (_transporter) return _transporter;
-  _transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: SMTP_USER,
-      pass: process.env.GMAIL_APP_PASSWORD,
-    },
+let _gmail = null;
+function getGmailClient() {
+  if (_gmail) return _gmail;
+  const jwtClient = new google.auth.JWT({
+    email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+    // Render env vars store the key with literal "\n" sequences instead
+    // of real newlines — has to be un-escaped or the PEM parse fails.
+    key: (process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+    scopes: ['https://www.googleapis.com/auth/gmail.send'],
+    subject: IMPERSONATE_EMAIL,
   });
-  return _transporter;
+  _gmail = google.gmail({ version: 'v1', auth: jwtClient });
+  return _gmail;
+}
+
+// Builds the raw RFC 2822 MIME message using Nodemailer purely as a
+// composer (no SMTP transport involved) — reuses the exact same
+// HTML/attachment/icalEvent handling already exercised for the Graph and
+// SMTP paths, so only the actual send call below is new.
+function buildRawMessage(mailOptions) {
+  return new Promise((resolve, reject) => {
+    new MailComposer(mailOptions).compile().build((err, message) => {
+      if (err) return reject(err);
+      resolve(message);
+    });
+  });
+}
+
+function toBase64Url(buffer) {
+  return buffer.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 async function sendEmail({ to, subject, body, attachments, icalEvent }) {
-  const transporter = getTransporter();
+  const gmail = getGmailClient();
+
+  const mailOptions = {
+    from: `"ExpoPilot" <${FROM_ADDRESS}>`,
+    to: Array.isArray(to) ? to.join(', ') : to,
+    subject,
+    html: body,
+    ...(attachments?.length ? {
+      attachments: attachments.map(a => ({
+        filename: a.name,
+        content: a.contentBytes ? Buffer.from(a.contentBytes, 'base64') : a.content,
+        contentType: a.contentType,
+      })),
+    } : {}),
+    ...(icalEvent ? { icalEvent } : {}),
+  };
 
   try {
-    await transporter.sendMail({
-      from: `"ExpoPilot" <${FROM_ADDRESS}>`,
-      to: Array.isArray(to) ? to.join(', ') : to,
-      subject,
-      html: body,
-      ...(attachments?.length ? {
-        attachments: attachments.map(a => ({
-          filename: a.name,
-          content: a.contentBytes ? Buffer.from(a.contentBytes, 'base64') : a.content,
-          contentType: a.contentType,
-        })),
-      } : {}),
-      ...(icalEvent ? { icalEvent } : {}),
+    const rawMessage = await buildRawMessage(mailOptions);
+    await gmail.users.messages.send({
+      userId: 'me',
+      requestBody: { raw: toBase64Url(rawMessage) },
     });
   } catch (err) {
-    console.error('[email] send failed:', err.message);
-    throw new Error(`Email send failed: ${err.message}`);
+    const detail = err.response?.data?.error?.message || err.message;
+    console.error('[email] Gmail API send failed:', detail);
+    throw new Error(`Gmail send failed: ${detail}`);
   }
 
   console.log(`[email] sent "${subject}" to ${Array.isArray(to) ? to.join(', ') : to}`);
