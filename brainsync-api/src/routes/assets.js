@@ -30,7 +30,7 @@ router.get('/', async (req, res, next) => {
 router.post('/', async (req, res, next) => {
   try {
     const { conference_id, catalog_id, name, category, quantity, ship_by_date, return_by_date,
-            shipping_carrier, tracking_number, return_carrier, return_tracking_number, notes } = req.body;
+            shipping_carrier, tracking_number, return_carrier, return_tracking_number, notes, asset_code } = req.body;
 
     let resolvedName = name;
     let resolvedCategory = category;
@@ -73,6 +73,7 @@ router.post('/', async (req, res, next) => {
         return_carrier: return_carrier || null,
         return_tracking_number: return_tracking_number || null,
         notes: resolvedNotes,
+        asset_code: asset_code || null,
       })
       .select()
       .single();
@@ -87,7 +88,7 @@ router.post('/', async (req, res, next) => {
 router.patch('/:id', async (req, res, next) => {
   try {
     const allowed = ['name','category','quantity','status','shipping_carrier','tracking_number',
-                     'return_carrier','return_tracking_number','ship_by_date','return_by_date','notes'];
+                     'return_carrier','return_tracking_number','ship_by_date','return_by_date','notes','asset_code'];
     const updates = Object.fromEntries(
       Object.entries(req.body).filter(([k]) => allowed.includes(k))
     );

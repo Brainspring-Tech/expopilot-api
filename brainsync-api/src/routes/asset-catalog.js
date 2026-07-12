@@ -31,7 +31,7 @@ router.get('/', async (req, res, next) => {
 // failing silently since Phase 1 shipped. Also switched to req.userClient.
 router.post('/', requireRole('admin', 'staff'), async (req, res, next) => {
   try {
-    const { name, category, default_notes } = req.body;
+    const { name, category, default_notes, asset_code } = req.body;
     if (!name) {
       return res.status(400).json({ error: 'name is required' });
     }
@@ -39,7 +39,7 @@ router.post('/', requireRole('admin', 'staff'), async (req, res, next) => {
     const { data, error } = await req.userClient
       .from('asset_catalog')
       .insert({
-        name, category, default_notes,
+        name, category, default_notes, asset_code,
         created_by: req.user.id,
         organization_id: req.user.organization_id,
       })
@@ -74,7 +74,7 @@ router.delete('/:id', requireRole('admin'), async (req, res, next) => {
 // deleted, never edited.
 router.patch('/:id', requireRole('admin', 'staff'), async (req, res, next) => {
   try {
-    const allowed = ['name', 'category', 'default_notes', 'total_quantity'];
+    const allowed = ['name', 'category', 'default_notes', 'total_quantity', 'asset_code'];
     const updates = Object.fromEntries(
       Object.entries(req.body).filter(([k]) => allowed.includes(k))
     );
