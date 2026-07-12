@@ -42,7 +42,7 @@ router.get('/overview', async (req, res, next) => {
   try {
     const { data: orgs, error: orgsError } = await supabase
       .from('organizations')
-      .select('id, name, slug, created_at, trial_ends_at, plan_status, vision_scan_limit, seat_limit');
+      .select('id, name, slug, created_at, trial_ends_at, plan_status, vision_scan_limit, seat_limit, last_payment_failed_at, payment_failure_count');
     if (orgsError) throw orgsError;
 
     const orgIds = orgs.map((o) => o.id);
@@ -51,7 +51,7 @@ router.get('/overview', async (req, res, next) => {
     startOfMonth.setUTCDate(1);
     startOfMonth.setUTCHours(0, 0, 0, 0);
 
-    const [usersRes, conferencesRes, visionUsageRes, topupsRes, grantsRes] = await Promise.all([
+    const [usersRes, conferencesRes, visionUsageRes, topupsRes, grantsRes, crmRes] = await Promise.all([
       supabase.from('users').select('organization_id').in('organization_id', orgIds),
       supabase.from('conferences').select('organization_id').in('organization_id', orgIds),
       supabase
@@ -70,6 +70,10 @@ router.get('/overview', async (req, res, next) => {
         .in('organization_id', orgIds)
         .is('revoked_at', null)
         .gt('expires_at', new Date().toISOString()),
+      supabase
+        .from('crm_integrations')
+        .select('organization_id, provider, enabled, last_synced_at, last_sync_status, last_sync_error')
+        .in('organization_id', orgIds),
     ]);
 
     if (usersRes.error) throw usersRes.error;
@@ -77,11 +81,16 @@ router.get('/overview', async (req, res, next) => {
     if (visionUsageRes.error) throw visionUsageRes.error;
     if (topupsRes.error) throw topupsRes.error;
     if (grantsRes.error) throw grantsRes.error;
+    if (crmRes.error) throw crmRes.error;
 
     const seatCounts = countBy(usersRes.data, 'organization_id');
     const conferenceCounts = countBy(conferencesRes.data, 'organization_id');
     const scanCounts = countBy(visionUsageRes.data, 'organization_id');
     const topupTotals = sumBy(topupsRes.data, 'organization_id', 'scans_granted');
+    // One row per (org, provider) today (just HubSpot) — keyed by org
+    // since the UI shows one sync-health cell per org, not per provider.
+    const crmByOrg = new Map();
+    for (const row of crmRes.data) crmByOrg.set(row.organization_id, row);
 
     // Only unrevoked, unexpired grants were fetched above, so any row
     // present here is by definition "currently active" — keep the
@@ -98,6 +107,7 @@ router.get('/overview', async (req, res, next) => {
     const result = orgs
       .map((org) => {
         const activeGrant = activeGrantByOrg.get(org.id) || null;
+        const crm = crmByOrg.get(org.id) || null;
         return {
           id: org.id,
           name: org.name,
@@ -105,6 +115,8 @@ router.get('/overview', async (req, res, next) => {
           created_at: org.created_at,
           trial_ends_at: org.trial_ends_at,
           plan_status: org.plan_status,
+          last_payment_failed_at: org.last_payment_failed_at,
+          payment_failure_count: org.payment_failure_count || 0,
           seats_used: seatCounts.get(org.id) || 0,
           seat_limit: org.seat_limit,
           scans_used_this_month: scanCounts.get(org.id) || 0,
@@ -113,6 +125,15 @@ router.get('/overview', async (req, res, next) => {
           conference_count: conferenceCounts.get(org.id) || 0,
           active_manual_grant: activeGrant
             ? { expires_at: activeGrant.expires_at, reason: activeGrant.reason }
+            : null,
+          crm_sync: crm
+            ? {
+                provider: crm.provider,
+                enabled: crm.enabled,
+                last_synced_at: crm.last_synced_at,
+                status: crm.last_sync_status,
+                error: crm.last_sync_error,
+              }
             : null,
         };
       })

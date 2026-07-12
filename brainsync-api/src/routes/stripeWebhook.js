@@ -114,6 +114,54 @@ router.post('/', async (req, res) => {
         break;
       }
 
+      // Previously unhandled entirely — a failed card produced no record
+      // anywhere until the subscription eventually flipped to past_due
+      // days into Stripe's dunning retries. payment_failure_count lets
+      // the platform-operator console flag "N failed attempts, most
+      // recent on <date>" well before that happens.
+      case 'invoice.payment_failed': {
+        const invoice = event.data.object;
+        const { data: org, error: fetchError } = await supabase
+          .from('organizations')
+          .select('id, payment_failure_count')
+          .eq('stripe_customer_id', invoice.customer)
+          .maybeSingle();
+
+        if (fetchError) {
+          console.error('[stripe webhook] failed to look up org for payment_failed:', fetchError.message);
+          break;
+        }
+        if (!org) {
+          console.error('[stripe webhook] invoice.payment_failed for unknown stripe_customer_id', invoice.customer);
+          break;
+        }
+
+        const { error } = await supabase
+          .from('organizations')
+          .update({
+            last_payment_failed_at: new Date().toISOString(),
+            payment_failure_count: (org.payment_failure_count || 0) + 1,
+          })
+          .eq('id', org.id);
+
+        if (error) console.error('[stripe webhook] failed to record payment failure:', error.message);
+        break;
+      }
+
+      // Clears the streak once a retry succeeds — payment_failure_count
+      // is meant to reflect an unresolved problem right now, not a
+      // lifetime failure tally.
+      case 'invoice.payment_succeeded': {
+        const invoice = event.data.object;
+        const { error } = await supabase
+          .from('organizations')
+          .update({ payment_failure_count: 0 })
+          .eq('stripe_customer_id', invoice.customer);
+
+        if (error) console.error('[stripe webhook] failed to clear payment failure count:', error.message);
+        break;
+      }
+
       default:
         break;
     }
