@@ -90,6 +90,79 @@ router.get('/roi', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /api/conferences/budget-summary — org-wide budget rollup for the
+// Dashboard. Must stay registered ahead of GET /:id below — as a
+// single-segment wildcard, /:id would otherwise shadow this literal
+// path (same class of bug already hit twice in users.js and
+// leads-adjacent routes: a wildcard registered first swallows a
+// same-method literal route registered after it).
+//
+// Two independent scopes, matching what was actually asked for:
+//   - totals/byCategory: all-time across every confirmed/active/completed
+//     conference (no date restriction) — the "budget summary" card.
+//   - monthly: cumulative running totals for the CURRENT CALENDAR YEAR
+//     only — the "fiscal period" trend chart. Budgeted cumulative adds a
+//     conference's full budget at its start_date; actual cumulative adds
+//     each expense at its own expense_date (which can fall well before
+//     or after the conference itself — e.g. paying for a hotel weeks
+//     ahead of the event).
+router.get('/budget-summary', async (req, res, next) => {
+  try {
+    const { data: confs, error: confError } = await req.userClient
+      .from('conferences')
+      .select('id, budget, start_date')
+      .in('status', ['confirmed', 'active', 'completed']);
+    if (confError) throw confError;
+
+    const totalBudget = (confs || []).reduce((s, c) => s + Number(c.budget || 0), 0);
+    const confIds = (confs || []).map(c => c.id);
+
+    let expenses = [];
+    if (confIds.length > 0) {
+      const { data: expData, error: expError } = await req.userClient
+        .from('conference_expenses')
+        .select('amount, category, expense_date')
+        .in('conference_id', confIds);
+      if (expError) throw expError;
+      expenses = expData || [];
+    }
+
+    const totalSpent = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
+
+    const categoryTotals = {};
+    for (const e of expenses) {
+      const cat = e.category || 'misc';
+      categoryTotals[cat] = (categoryTotals[cat] || 0) + Number(e.amount || 0);
+    }
+    const byCategory = Object.entries(categoryTotals)
+      .map(([category, total]) => ({ category, total }))
+      .sort((a, b) => b.total - a.total);
+
+    const year = new Date().getFullYear();
+    const confsThisYear = (confs || []).filter(c => c.start_date && new Date(c.start_date).getFullYear() === year);
+    const expensesThisYear = expenses.filter(e => e.expense_date && new Date(e.expense_date).getFullYear() === year);
+
+    const monthly = Array.from({ length: 12 }, (_, i) => {
+      const monthEnd = new Date(year, i + 1, 0); // last calendar day of month i
+      const budgetedCumulative = confsThisYear
+        .filter(c => new Date(c.start_date) <= monthEnd)
+        .reduce((s, c) => s + Number(c.budget || 0), 0);
+      const actualCumulative = expensesThisYear
+        .filter(e => new Date(e.expense_date) <= monthEnd)
+        .reduce((s, e) => s + Number(e.amount || 0), 0);
+      return { month: `${year}-${String(i + 1).padStart(2, '0')}`, budgetedCumulative, actualCumulative };
+    });
+
+    res.json({
+      totalBudget,
+      totalSpent,
+      remaining: totalBudget - totalSpent,
+      byCategory,
+      monthly,
+    });
+  } catch (err) { next(err); }
+});
+
 // GET /api/conferences/:id — single conference with staff + asset counts + attachments
 router.get('/:id', async (req, res, next) => {
   try {
