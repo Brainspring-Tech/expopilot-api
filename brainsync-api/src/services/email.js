@@ -239,6 +239,108 @@ async function sendWeeklyPersonalSummary({ staffEmail, staffName, leadsCaptured,
   });
 }
 
+async function sendTaskDueReminder({ staffEmail, staffName, taskTitle, conferenceId, conferenceName, dueDate, overdue }) {
+  await sendEmail({
+    to: staffEmail,
+    subject: overdue ? `Overdue: ${taskTitle}` : `Due tomorrow: ${taskTitle}`,
+    body: renderEmailTemplate({
+      heading: overdue ? 'Task overdue' : 'Task due tomorrow',
+      bodyHtml: `
+        <p>Hi ${staffName},</p>
+        <p>${overdue ? 'This task was due yesterday and is still open' : 'This task is due tomorrow'} on <strong>${conferenceName}</strong>:</p>
+        <p><strong>${taskTitle}</strong> — due ${dueDate}</p>
+      `,
+      ctaText: 'View task',
+      ctaUrl: conferenceId ? `${ADMIN_URL}/conferences/${conferenceId}` : ADMIN_URL,
+    }),
+  });
+}
+
+async function sendShiftReminder({ staffEmail, staffName, conferenceName, venue, shiftDate, startTime, endTime }) {
+  await sendEmail({
+    to: staffEmail,
+    subject: `Reminder: your shift at ${conferenceName} starts tomorrow`,
+    body: renderEmailTemplate({
+      heading: 'Shift tomorrow',
+      bodyHtml: `
+        <p>Hi ${staffName},</p>
+        <p>Your shift at <strong>${conferenceName}</strong>${venue ? ` (${venue})` : ''} starts tomorrow, <strong>${shiftDate}</strong>, from <strong>${startTime}</strong> to <strong>${endTime}</strong>.</p>
+      `,
+      ctaText: 'View your schedule',
+      ctaUrl: `${FRONTEND_URL}/schedule`,
+    }),
+  });
+}
+
+async function sendShippingDeadlineAlert({ adminEmail, conferenceId, conferenceName, assets }) {
+  const assetListHtml = `<ul style="margin:12px 0;padding-left:20px;">${assets.map(a => `<li><strong>${a.name}</strong> — ship by ${a.ship_by_date}</li>`).join('')}</ul>`;
+
+  await sendEmail({
+    to: adminEmail,
+    subject: `Shipping deadline approaching — ${conferenceName}`,
+    body: renderEmailTemplate({
+      heading: 'Shipping deadline approaching',
+      bodyHtml: `
+        <p>The following assets for <strong>${conferenceName}</strong> need to ship soon:</p>
+        ${assetListHtml}
+      `,
+      ctaText: 'View assets',
+      ctaUrl: conferenceId ? `${ADMIN_URL}/conferences/${conferenceId}` : ADMIN_URL,
+    }),
+  });
+}
+
+async function sendBudgetThresholdAlert({ adminEmail, conferenceId, conferenceName, thresholdPercent, budget, spent }) {
+  await sendEmail({
+    to: adminEmail,
+    subject: `${conferenceName} has crossed ${thresholdPercent}% of budget`,
+    body: renderEmailTemplate({
+      heading: `${thresholdPercent}% of budget spent`,
+      bodyHtml: `
+        <p><strong>${conferenceName}</strong> has spent <strong>$${Number(spent).toLocaleString()}</strong> of its <strong>$${Number(budget).toLocaleString()}</strong> budget (${thresholdPercent}%+).</p>
+      `,
+      ctaText: 'View budget',
+      ctaUrl: conferenceId ? `${ADMIN_URL}/conferences/${conferenceId}` : ADMIN_URL,
+    }),
+  });
+}
+
+async function sendPostConferenceWrapup({ staffEmail, staffName, conferenceId, conferenceName, totalLeads, hotLeads }) {
+  await sendEmail({
+    to: staffEmail,
+    subject: `Wrap-up: ${conferenceName}`,
+    body: renderEmailTemplate({
+      heading: `Nice work at ${conferenceName}`,
+      bodyHtml: `
+        <p>Hi ${staffName},</p>
+        <p>${conferenceName} has wrapped up. Here's how it went:</p>
+        <ul style="margin:12px 0;padding-left:20px;">
+          <li>Total leads captured: <strong>${totalLeads}</strong></li>
+          <li>Hot leads (score ≥ 4): <strong>${hotLeads}</strong></li>
+        </ul>
+      `,
+      ctaText: 'View leads',
+      ctaUrl: `${FRONTEND_URL}/leads`,
+    }),
+  });
+}
+
+async function sendInactivityNudge({ staffEmail, staffName, conferenceName, startDate }) {
+  await sendEmail({
+    to: staffEmail,
+    subject: `${conferenceName} is coming up`,
+    body: renderEmailTemplate({
+      heading: `${conferenceName} is coming up`,
+      bodyHtml: `
+        <p>Hi ${staffName},</p>
+        <p>You're assigned to <strong>${conferenceName}</strong>, starting <strong>${startDate}</strong>. It's been a little while since you've logged into ExpoPilot — check your schedule and travel details before the event.</p>
+      `,
+      ctaText: 'Open ExpoPilot',
+      ctaUrl: FRONTEND_URL,
+    }),
+  });
+}
+
 // Escapes TEXT-type ICS field values per RFC 5545 §3.3.11.
 function escapeICSText(str = '') {
   return String(str)
@@ -319,4 +421,10 @@ module.exports = {
   sendShiftCalendarInvite,
   sendWeeklyAdminDigest,
   sendWeeklyPersonalSummary,
+  sendTaskDueReminder,
+  sendShiftReminder,
+  sendShippingDeadlineAlert,
+  sendBudgetThresholdAlert,
+  sendPostConferenceWrapup,
+  sendInactivityNudge,
 };
