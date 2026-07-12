@@ -52,7 +52,7 @@ router.get('/overview', async (req, res, next) => {
     startOfMonth.setUTCHours(0, 0, 0, 0);
 
     const [usersRes, conferencesRes, visionUsageRes, topupsRes, grantsRes, crmRes] = await Promise.all([
-      supabase.from('users').select('organization_id').in('organization_id', orgIds),
+      supabase.from('users').select('organization_id, role').in('organization_id', orgIds),
       supabase.from('conferences').select('organization_id').in('organization_id', orgIds),
       supabase
         .from('vision_usage')
@@ -84,6 +84,7 @@ router.get('/overview', async (req, res, next) => {
     if (crmRes.error) throw crmRes.error;
 
     const seatCounts = countBy(usersRes.data, 'organization_id');
+    const adminCounts = countBy(usersRes.data.filter(u => u.role === 'admin'), 'organization_id');
     const conferenceCounts = countBy(conferencesRes.data, 'organization_id');
     const scanCounts = countBy(visionUsageRes.data, 'organization_id');
     const topupTotals = sumBy(topupsRes.data, 'organization_id', 'scans_granted');
@@ -118,6 +119,7 @@ router.get('/overview', async (req, res, next) => {
           last_payment_failed_at: org.last_payment_failed_at,
           payment_failure_count: org.payment_failure_count || 0,
           seats_used: seatCounts.get(org.id) || 0,
+          admin_count: adminCounts.get(org.id) || 0,
           seat_limit: org.seat_limit,
           scans_used_this_month: scanCounts.get(org.id) || 0,
           scans_included: org.vision_scan_limit,
@@ -198,6 +200,13 @@ router.patch('/organizations/:id', async (req, res, next) => {
 
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'Organization not found' });
+
+    await logPlatformAction({
+      actorUserId: req.user.id,
+      action: 'limits.updated',
+      targetOrganizationId: req.params.id,
+      metadata: updates,
+    });
 
     res.json(data);
   } catch (err) { next(err); }
@@ -397,6 +406,29 @@ router.get('/cron-health', async (req, res, next) => {
       .from('cron_job_health')
       .select('*')
       .order('job_name');
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
+// GET /api/platform/audit-log
+// Every logged platform-operator action, across all orgs, newest first —
+// "who did what to which org, and when." Previously only access grant
+// create/revoke were ever logged here; limits.updated (seat/scan limit
+// changes) was added alongside this endpoint. Capped at 500 rows, same
+// reasoning as /feedback above.
+router.get('/audit-log', async (req, res, next) => {
+  try {
+    const { data, error } = await supabase
+      .from('platform_audit_log')
+      .select(`
+        id, action, metadata, created_at,
+        organizations:target_organization_id(name, slug),
+        actor:actor_user_id(full_name, email)
+      `)
+      .order('created_at', { ascending: false })
+      .limit(500);
 
     if (error) throw error;
     res.json(data);
