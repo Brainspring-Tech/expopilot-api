@@ -219,7 +219,7 @@ router.get('/:id', async (req, res, next) => {
 // has been failing. Also switched to req.userClient for tenant isolation.
 router.post('/', requireRole('admin'), async (req, res, next) => {
   try {
-    const { name, venue, city, state, start_date, end_date, budget, notes, website_url } = req.body;
+    const { name, venue, city, state, start_date, end_date, budget, notes, website_url, timezone } = req.body;
     if (!name || !start_date || !end_date) {
       return res.status(400).json({ error: 'name, start_date, and end_date are required' });
     }
@@ -228,6 +228,7 @@ router.post('/', requireRole('admin'), async (req, res, next) => {
       .from('conferences')
       .insert({
         name, venue, city, state, start_date, end_date, budget, notes, website_url,
+        ...(timezone ? { timezone } : {}),
         created_by: req.user.id,
         organization_id: req.user.organization_id,
       })
