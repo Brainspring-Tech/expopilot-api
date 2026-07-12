@@ -67,6 +67,14 @@ router.get('/me', async (req, res, next) => {
 // on purpose since most of this row (plan_status, stripe ids, etc.) is
 // managed by Stripe webhooks or the platform-operator console, not the
 // org's own admin.
+//
+// Service-role client, not req.userClient — same reasoning as the
+// manual_access_grants lookup above: organizations has no RLS UPDATE
+// policy, so req.userClient silently affects zero rows (confirmed live —
+// the endpoint returned 404 "Organization not found" even for a real
+// org). Safe here because requireRole('admin') already gates the route,
+// and the id filter is req.user.organization_id from the caller's own
+// verified session, never client-supplied.
 router.patch('/me', requireRole('admin'), async (req, res, next) => {
   try {
     const allowed = ['fiscal_year_start_month'];
@@ -82,7 +90,7 @@ router.patch('/me', requireRole('admin'), async (req, res, next) => {
       updates.fiscal_year_start_month = m;
     }
 
-    const { data, error } = await req.userClient
+    const { data, error } = await supabase
       .from('organizations')
       .update(updates)
       .eq('id', req.user.organization_id)
