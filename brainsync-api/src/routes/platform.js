@@ -385,4 +385,22 @@ router.get('/feedback', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /api/platform/cron-health
+// One row per background job (see src/services/cronHealth.js and each
+// job in src/jobs/*.js) — previously invisible entirely, since these
+// jobs only ever logged to Render's console. Reflects each job's MOST
+// RECENT run only, not a history; a job that's never run yet (e.g.
+// weekly digest before its first Monday) simply won't have a row.
+router.get('/cron-health', async (req, res, next) => {
+  try {
+    const { data, error } = await supabase
+      .from('cron_job_health')
+      .select('*')
+      .order('job_name');
+
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
 module.exports = router;

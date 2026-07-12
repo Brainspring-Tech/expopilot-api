@@ -2,6 +2,7 @@ const cron     = require('node-cron');
 const supabase = require('../services/supabase');
 const { syncAllUnsynced } = require('../services/hubspot');
 const { sendDailyLeadSummary } = require('../services/email');
+const { recordCronRun } = require('../services/cronHealth');
 
 function startSyncJob() {
   // Sync unsynced leads every 15 minutes
@@ -9,8 +10,10 @@ function startSyncJob() {
     console.log('[cron] running HubSpot sync');
     try {
       await syncAllUnsynced();
+      await recordCronRun('hubspot_legacy_sync', { success: true });
     } catch (err) {
       console.error('[cron] sync error:', err.message);
+      await recordCronRun('hubspot_legacy_sync', { success: false, error: err.message });
     }
   });
 
@@ -19,8 +22,10 @@ function startSyncJob() {
     console.log('[cron] sending daily lead summaries');
     try {
       await sendDailyConferenceSummaries();
+      await recordCronRun('daily_lead_summary', { success: true });
     } catch (err) {
       console.error('[cron] summary email error:', err.message);
+      await recordCronRun('daily_lead_summary', { success: false, error: err.message });
     }
   });
 

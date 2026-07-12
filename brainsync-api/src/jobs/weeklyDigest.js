@@ -2,22 +2,31 @@ const cron     = require('node-cron');
 const supabase = require('../services/supabase');
 const { sendWeeklyAdminDigest, sendWeeklyPersonalSummary } = require('../services/email');
 const { notifyIfEnabled } = require('../services/notifications');
+const { recordCronRun } = require('../services/cronHealth');
 
 function startWeeklyDigestJob() {
   // Monday 8am — one weekly rollup per org (admins) and per staff member
   // who actually captured a lead in the past week (personal summary).
   cron.schedule('0 8 * * 1', async () => {
     console.log('[cron] sending weekly digests');
+    const failed = [];
     try {
       await sendWeeklyAdminDigests();
     } catch (err) {
       console.error('[cron] weekly admin digest error:', err.message);
+      failed.push({ label: 'admin digests', error: err.message });
     }
     try {
       await sendWeeklyPersonalSummaries();
     } catch (err) {
       console.error('[cron] weekly personal summary error:', err.message);
+      failed.push({ label: 'personal summaries', error: err.message });
     }
+
+    await recordCronRun('weekly_digest', {
+      success: failed.length === 0,
+      error: failed.length > 0 ? failed.map(f => `${f.label}: ${f.error}`).join('; ') : undefined,
+    });
   });
 
   console.log('[cron] job scheduled: weekly digest (Mon 08:00)');

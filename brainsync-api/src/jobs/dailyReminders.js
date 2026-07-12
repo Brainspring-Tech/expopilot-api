@@ -9,6 +9,7 @@ const {
   sendInactivityNudge,
 } = require('../services/email');
 const { notifyIfEnabled } = require('../services/notifications');
+const { recordCronRun } = require('../services/cronHealth');
 
 // How many days out an asset's ship_by_date triggers a reminder.
 const SHIPPING_REMINDER_DAYS = 3;
@@ -35,13 +36,27 @@ function startDailyRemindersJob() {
       ['post-conference wrapups', checkPostConferenceWrapups],
       ['inactivity nudges',      checkInactivityNudges],
     ];
+    const failed = [];
     for (const [label, fn] of checks) {
       try {
         await fn();
       } catch (err) {
         console.error(`[cron] ${label} error:`, err.message);
+        failed.push({ label, error: err.message });
       }
     }
+
+    // Each of the 6 checks is already independently isolated (one
+    // failing doesn't block the others), but the run as a whole is
+    // still flagged as an error if any check failed — a platform
+    // operator watching this page needs to know something broke, even
+    // if the other 5 checks completed fine. Which check(s) failed are
+    // named in the error message rather than just "something failed".
+    await recordCronRun('daily_reminders', {
+      success: failed.length === 0,
+      error: failed.length > 0 ? failed.map(f => `${f.label}: ${f.error}`).join('; ') : undefined,
+      summary: { checks: checks.length, failed: failed.map(f => f.label) },
+    });
   });
 
   console.log('[cron] job scheduled: daily reminders (07:00)');
