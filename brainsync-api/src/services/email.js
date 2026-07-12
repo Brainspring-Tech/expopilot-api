@@ -198,6 +198,47 @@ async function sendDiscussionCommentAlert({ staffEmail, staffName, conferenceId,
   });
 }
 
+async function sendWeeklyAdminDigest({ adminEmail, upcomingConferences, openTaskCount, unshippedAssetCount }) {
+  const confListHtml = upcomingConferences.length
+    ? `<ul style="margin:12px 0;padding-left:20px;">${upcomingConferences.map(c => `<li><strong>${c.name}</strong> — ${c.start_date}</li>`).join('')}</ul>`
+    : `<p style="color:#5A5D66;">No conferences starting in the next 7 days.</p>`;
+
+  await sendEmail({
+    to: adminEmail,
+    subject: `Your weekly ExpoPilot digest`,
+    body: renderEmailTemplate({
+      heading: 'Your week ahead',
+      bodyHtml: `
+        <p>Here's what's coming up this week:</p>
+        <p style="margin:16px 0 4px;font-weight:700;color:#191B20;">Conferences starting soon</p>
+        ${confListHtml}
+        <ul style="margin:12px 0;padding-left:20px;">
+          <li>Open tasks across your conferences: <strong>${openTaskCount}</strong></li>
+          <li>Assets not yet shipped: <strong>${unshippedAssetCount}</strong></li>
+        </ul>
+      `,
+      ctaText: 'Open dashboard',
+      ctaUrl: ADMIN_URL,
+    }),
+  });
+}
+
+async function sendWeeklyPersonalSummary({ staffEmail, staffName, leadsCaptured, conferenceCount }) {
+  await sendEmail({
+    to: staffEmail,
+    subject: `Your week in review — ${leadsCaptured} leads captured`,
+    body: renderEmailTemplate({
+      heading: 'Nice work this week',
+      bodyHtml: `
+        <p>Hi ${staffName},</p>
+        <p>This past week you captured <strong>${leadsCaptured}</strong> lead${leadsCaptured === 1 ? '' : 's'} across <strong>${conferenceCount}</strong> conference${conferenceCount === 1 ? '' : 's'}.</p>
+      `,
+      ctaText: 'View your leads',
+      ctaUrl: `${FRONTEND_URL}/leads`,
+    }),
+  });
+}
+
 // Escapes TEXT-type ICS field values per RFC 5545 §3.3.11.
 function escapeICSText(str = '') {
   return String(str)
@@ -276,4 +317,6 @@ module.exports = {
   sendTaskAssignmentAlert,
   sendDiscussionCommentAlert,
   sendShiftCalendarInvite,
+  sendWeeklyAdminDigest,
+  sendWeeklyPersonalSummary,
 };

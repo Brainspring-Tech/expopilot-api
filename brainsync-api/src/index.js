@@ -29,6 +29,7 @@ const apiKeysRouter       = require('./routes/apiKeys');
 
 const { startSyncJob } = require('./jobs/hubspotSync');
 const { startCrmSyncJob } = require('./jobs/crmSync');
+const { startWeeklyDigestJob } = require('./jobs/weeklyDigest');
  
 const app = express();
  
@@ -147,5 +148,7 @@ app.listen(PORT, () => {
     console.log('HubSpot sync job scheduled');
     startCrmSyncJob();
     console.log('CRM integrations sync job scheduled');
+    startWeeklyDigestJob();
+    console.log('Weekly digest job scheduled');
   }
 });

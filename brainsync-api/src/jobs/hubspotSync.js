@@ -33,23 +33,26 @@ async function sendDailyConferenceSummaries() {
   // Find active conferences happening today
   const { data: activeConfs } = await supabase
     .from('conferences')
-    .select('id, name')
+    .select('id, name, organization_id')
     .eq('status', 'active')
     .lte('start_date', today)
     .gte('end_date', today);
 
   if (!activeConfs || activeConfs.length === 0) return;
 
-  // Get admin emails
-  const { data: admins } = await supabase
-    .from('users')
-    .select('email')
-    .eq('role', 'admin');
-
-  const adminEmails = (admins || []).map(a => a.email);
-  if (adminEmails.length === 0) return;
-
   for (const conf of activeConfs) {
+    // Scoped to this conference's own org — a global admin query here
+    // would leak other orgs' conference names/lead counts into this
+    // org's summary email.
+    const { data: admins } = await supabase
+      .from('users')
+      .select('email')
+      .eq('role', 'admin')
+      .eq('organization_id', conf.organization_id);
+
+    const adminEmails = (admins || []).map(a => a.email);
+    if (adminEmails.length === 0) continue;
+
     const { count: total } = await supabase
       .from('leads')
       .select('*', { count: 'exact', head: true })

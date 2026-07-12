@@ -39,7 +39,7 @@ router.patch('/me/activate', async (req, res, next) => {
 // allow role or email here — email changes go through Supabase Auth's
 // own verified-email-change flow, not this endpoint, and role is admin-
 // only (see PATCH /:id/role below).
-const NOTIFICATION_PREF_KEYS = ['conference_assignment', 'task_assignment', 'discussion_comment', 'shift_calendar_invite'];
+const NOTIFICATION_PREF_KEYS = ['conference_assignment', 'task_assignment', 'discussion_comment', 'shift_calendar_invite', 'weekly_admin_digest', 'weekly_personal_summary'];
 
 router.patch('/me', async (req, res, next) => {
   try {
