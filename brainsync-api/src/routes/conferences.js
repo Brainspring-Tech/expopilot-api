@@ -100,8 +100,10 @@ router.get('/roi', async (req, res, next) => {
 // Two independent scopes, matching what was actually asked for:
 //   - totals/byCategory: all-time across every confirmed/active/completed
 //     conference (no date restriction) — the "budget summary" card.
-//   - monthly: cumulative running totals for the CURRENT CALENDAR YEAR
-//     only — the "fiscal period" trend chart. Budgeted cumulative adds a
+//   - monthly: cumulative running totals for the org's CURRENT FISCAL
+//     YEAR (organizations.fiscal_year_start_month, defaults to 1/January
+//     — plain calendar year for orgs that never configured it) — the
+//     "fiscal period" trend chart. Budgeted cumulative adds a
 //     conference's full budget at its start_date; actual cumulative adds
 //     each expense at its own expense_date (which can fall well before
 //     or after the conference itself — e.g. paying for a hotel weeks
@@ -138,20 +140,42 @@ router.get('/budget-summary', async (req, res, next) => {
       .map(([category, total]) => ({ category, total }))
       .sort((a, b) => b.total - a.total);
 
-    const year = new Date().getFullYear();
-    const confsThisYear = (confs || []).filter(c => c.start_date && new Date(c.start_date).getFullYear() === year);
-    const expensesThisYear = expenses.filter(e => e.expense_date && new Date(e.expense_date).getFullYear() === year);
+    const { data: org } = await req.userClient
+      .from('organizations')
+      .select('fiscal_year_start_month')
+      .eq('id', req.user.organization_id)
+      .maybeSingle();
+    const fyStartMonth = org?.fiscal_year_start_month || 1; // 1-12, 1 = plain calendar year
+
+    // Which fiscal year are we currently inside? If the current calendar
+    // month hasn't reached the FY start month yet, we're still in the
+    // fiscal year that began in the PREVIOUS calendar year.
+    const now = new Date();
+    const currentCalendarMonth = now.getMonth() + 1; // 1-12
+    const fyStartCalendarYear = currentCalendarMonth >= fyStartMonth ? now.getFullYear() : now.getFullYear() - 1;
+    const fyStart = new Date(fyStartCalendarYear, fyStartMonth - 1, 1);
+    const fyEnd   = new Date(fyStartCalendarYear + 1, fyStartMonth - 1, 0); // day before next FY starts
+
+    const confsThisFY = (confs || []).filter(c => c.start_date && new Date(c.start_date) >= fyStart && new Date(c.start_date) <= fyEnd);
+    const expensesThisFY = expenses.filter(e => e.expense_date && new Date(e.expense_date) >= fyStart && new Date(e.expense_date) <= fyEnd);
 
     const monthly = Array.from({ length: 12 }, (_, i) => {
-      const monthEnd = new Date(year, i + 1, 0); // last calendar day of month i
-      const budgetedCumulative = confsThisYear
+      const monthIndex0 = (fyStartMonth - 1 + i) % 12; // 0-11
+      const slotYear = fyStartCalendarYear + Math.floor((fyStartMonth - 1 + i) / 12);
+      const monthEnd = new Date(slotYear, monthIndex0 + 1, 0); // last calendar day of that slot's month
+      const budgetedCumulative = confsThisFY
         .filter(c => new Date(c.start_date) <= monthEnd)
         .reduce((s, c) => s + Number(c.budget || 0), 0);
-      const actualCumulative = expensesThisYear
+      const actualCumulative = expensesThisFY
         .filter(e => new Date(e.expense_date) <= monthEnd)
         .reduce((s, e) => s + Number(e.amount || 0), 0);
-      return { month: `${year}-${String(i + 1).padStart(2, '0')}`, budgetedCumulative, actualCumulative };
+      return { month: `${slotYear}-${String(monthIndex0 + 1).padStart(2, '0')}`, budgetedCumulative, actualCumulative };
     });
+
+    const fmtMonthYear = d => d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+    const periodLabel = fyStartMonth === 1
+      ? String(fyStartCalendarYear)
+      : `${fmtMonthYear(fyStart)} – ${fmtMonthYear(fyEnd)}`;
 
     res.json({
       totalBudget,
@@ -159,6 +183,7 @@ router.get('/budget-summary', async (req, res, next) => {
       remaining: totalBudget - totalSpent,
       byCategory,
       monthly,
+      periodLabel,
     });
   } catch (err) { next(err); }
 });
