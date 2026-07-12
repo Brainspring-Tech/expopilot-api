@@ -36,7 +36,7 @@ router.get('/me', async (req, res, next) => {
 
     const { data: org, error } = await req.userClient
       .from('organizations')
-      .select('id, name, plan_status, plan_tier, trial_ends_at, stripe_customer_id, prospect_finder_enabled, fiscal_year_start_month')
+      .select('id, name, plan_status, plan_tier, trial_ends_at, stripe_customer_id, prospect_finder_enabled, fiscal_year_start_month, phone, address_line1, city, state, postal_code')
       .eq('id', orgId)
       .maybeSingle();
 
@@ -54,6 +54,11 @@ router.get('/me', async (req, res, next) => {
       has_billing_account: !!org.stripe_customer_id,
       prospect_finder_enabled: !!org.prospect_finder_enabled || !!activeGrant,
       fiscal_year_start_month: org.fiscal_year_start_month || 1,
+      phone: org.phone,
+      address_line1: org.address_line1,
+      city: org.city,
+      state: org.state,
+      postal_code: org.postal_code,
       active_manual_grant: activeGrant
         ? { reason: activeGrant.reason, expires_at: activeGrant.expires_at }
         : null,
@@ -77,7 +82,7 @@ router.get('/me', async (req, res, next) => {
 // verified session, never client-supplied.
 router.patch('/me', requireRole('admin'), async (req, res, next) => {
   try {
-    const allowed = ['fiscal_year_start_month'];
+    const allowed = ['fiscal_year_start_month', 'name', 'phone', 'address_line1', 'city', 'state', 'postal_code'];
     const updates = Object.fromEntries(
       Object.entries(req.body).filter(([k]) => allowed.includes(k))
     );
@@ -94,7 +99,7 @@ router.patch('/me', requireRole('admin'), async (req, res, next) => {
       .from('organizations')
       .update(updates)
       .eq('id', req.user.organization_id)
-      .select('id, fiscal_year_start_month')
+      .select('id, name, phone, address_line1, city, state, postal_code, fiscal_year_start_month')
       .maybeSingle();
 
     if (error) throw error;
