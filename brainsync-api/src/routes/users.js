@@ -225,9 +225,17 @@ router.post('/', requireRole('admin'), async (req, res, next) => {
     // role-based routing: admin/staff/viewer land on the admin console's
     // set-password page; lead_capture lands on the PWA's, since that's
     // the only surface that role ever touches.
+    //
+    // getexpopilot.com here, not expopilot.app (the apps' real hostnames)
+    // — these subdomains are Netlify domain aliases for the same admin/
+    // PWA sites, added specifically so this link's domain matches the
+    // invite email's sender domain (noreply@getexpopilot.com). Resend
+    // flagged a sender/link domain mismatch as a deliverability risk —
+    // corporate mail filters treat it as a phishing signal — which is
+    // why invites to *.expopilot.app links were landing in quarantine.
     const redirectTo = assignedRole === 'lead_capture'
-      ? 'https://app.expopilot.app/set-password'
-      : 'https://admin.expopilot.app/set-password';
+      ? 'https://app.getexpopilot.com/set-password'
+      : 'https://admin.getexpopilot.com/set-password';
 
     // The handle_new_user() trigger reads full_name/organization_id from
     // this metadata to set up the new profile row (status defaults to
@@ -303,8 +311,8 @@ router.post('/:id/resend-invite', requireRole('admin'), async (req, res, next) =
     if (orgError) throw orgError;
 
     const redirectTo = targetUser.role === 'lead_capture'
-      ? 'https://app.expopilot.app/set-password'
-      : 'https://admin.expopilot.app/set-password';
+      ? 'https://app.getexpopilot.com/set-password'
+      : 'https://admin.getexpopilot.com/set-password';
 
     const { error: authError } = await supabase.auth.admin.inviteUserByEmail(targetUser.email, {
       data: {
