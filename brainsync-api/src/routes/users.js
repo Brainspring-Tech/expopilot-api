@@ -2,7 +2,7 @@ const express  = require('express');
 const router   = express.Router();
 const supabase = require('../services/supabase');
 const { requireAuth, requireRole, blockApiKey } = require('../middleware/auth');
-const { sendConferenceAssignmentAlert } = require('../services/email');
+const { sendConferenceAssignmentAlert, sendInviteResendEmail } = require('../services/email');
 const { notifyIfEnabled } = require('../services/notifications');
 
 router.use(requireAuth);
@@ -314,17 +314,34 @@ router.post('/:id/resend-invite', requireRole('admin'), async (req, res, next) =
       ? 'https://app.getexpopilot.com/set-password'
       : 'https://admin.getexpopilot.com/set-password';
 
-    const { error: authError } = await supabase.auth.admin.inviteUserByEmail(targetUser.email, {
-      data: {
-        full_name: targetUser.full_name,
-        organization_id: targetUser.organization_id,
-        role: targetUser.role,
-        org_name: org.name,
-      },
-      redirectTo,
+    // inviteUserByEmail() errors with "User already registered" for
+    // anyone past their first invite — Supabase's /invite endpoint
+    // refuses to re-invite an existing auth user even while still
+    // unconfirmed. generateLink({ type: 'recovery' }) doesn't have that
+    // restriction (it's built for existing users) and lands on the same
+    // set-password page either way, since SetPasswordPage just calls
+    // supabase.auth.updateUser({ password }) using whatever session the
+    // link establishes — it doesn't care whether the link was an invite
+    // or recovery type.
+    const { data: linkData, error: linkError } = await supabase.auth.admin.generateLink({
+      type: 'recovery',
+      email: targetUser.email,
+      options: { redirectTo },
     });
 
-    if (authError) throw authError;
+    if (linkError) throw linkError;
+
+    // generateLink() never sends an email on its own — send it ourselves
+    // through the Gmail pipeline every other notification already uses,
+    // rather than Supabase's Resend-backed mailer, since that's the
+    // piece we've had repeated deliverability trouble with.
+    await sendInviteResendEmail({
+      toEmail: targetUser.email,
+      fullName: targetUser.full_name,
+      orgName: org.name,
+      actionLink: linkData.properties.action_link,
+      isLeadCapture: targetUser.role === 'lead_capture',
+    });
 
     res.json({ message: 'Invite re-sent' });
   } catch (err) { next(err); }
@@ -335,15 +352,21 @@ router.post('/:id/resend-invite', requireRole('admin'), async (req, res, next) =
 // email at all. Stopgap for the Resend/Supabase-email deliverability
 // issues we've hit — lets an admin copy the link and hand it to the
 // person directly (Slack, text, in person) when email keeps landing
-// nowhere. Uses generateLink() rather than inviteUserByEmail(), since
-// generateLink() returns the action_link and does NOT trigger Supabase's
-// own mailer — see GoTrueAdminApi's docstring ("Generates email links
-// ... to be sent via a custom email provider").
+// nowhere.
+//
+// Uses generateLink({ type: 'recovery' }), not 'invite' — 'invite'
+// hits the same "User already registered" wall as inviteUserByEmail()
+// for anyone past their first invite (see resend-invite above), since
+// this always runs against a user that's already been created.
+// 'recovery' is built for existing users so it has no such restriction,
+// and generateLink() never sends an email either way — see
+// GoTrueAdminApi's docstring ("Generates email links ... to be sent via
+// a custom email provider").
 router.post('/:id/invite-link', requireRole('admin'), async (req, res, next) => {
   try {
     const { data: targetUser, error: targetError } = await req.userClient
       .from('users')
-      .select('id, email, full_name, role, status, organization_id')
+      .select('id, email, role, status, organization_id')
       .eq('id', req.params.id)
       .maybeSingle();
 
@@ -358,30 +381,14 @@ router.post('/:id/invite-link', requireRole('admin'), async (req, res, next) => 
       });
     }
 
-    const { data: org, error: orgError } = await req.userClient
-      .from('organizations')
-      .select('name')
-      .eq('id', req.user.organization_id)
-      .single();
-
-    if (orgError) throw orgError;
-
     const redirectTo = targetUser.role === 'lead_capture'
       ? 'https://app.getexpopilot.com/set-password'
       : 'https://admin.getexpopilot.com/set-password';
 
     const { data, error: linkError } = await supabase.auth.admin.generateLink({
-      type: 'invite',
+      type: 'recovery',
       email: targetUser.email,
-      options: {
-        data: {
-          full_name: targetUser.full_name,
-          organization_id: targetUser.organization_id,
-          role: targetUser.role,
-          org_name: org.name,
-        },
-        redirectTo,
-      },
+      options: { redirectTo },
     });
 
     if (linkError) throw linkError;

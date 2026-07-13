@@ -149,6 +149,32 @@ async function sendConferenceAssignmentAlert({ staffEmail, staffName, conference
   });
 }
 
+// For invite resends only — the *original* invite still goes out through
+// Supabase's own mailer (Resend SMTP) via inviteUserByEmail, since that's
+// the only call that can create the auth user in the first place. But
+// resending to an already-created, still-unconfirmed user has to go
+// through generateLink() instead (inviteUserByEmail errors with "User
+// already registered" for any user past their first invite), and
+// generateLink() never sends an email itself — so this sends it through
+// the same Gmail pipeline every other notification already uses
+// successfully, sidestepping Resend's deliverability problems entirely
+// for the resend path.
+async function sendInviteResendEmail({ toEmail, fullName, orgName, actionLink, isLeadCapture }) {
+  await sendEmail({
+    to: toEmail,
+    subject: `You're invited to join ${orgName} on ExpoPilot`,
+    body: renderEmailTemplate({
+      heading: `You're invited to join ${orgName}`,
+      bodyHtml: `<p>Hi ${fullName || 'there'},</p><p><strong>${orgName}</strong> has invited you to ExpoPilot${isLeadCapture ? ' to help capture leads at upcoming events' : ''}. Click below to set your password and get started.</p>`,
+      ctaText: 'Set your password',
+      ctaUrl: actionLink,
+      tip: isLeadCapture
+        ? 'Tip: open this link on your phone, then add ExpoPilot to your home screen for quick access at the booth.'
+        : undefined,
+    }),
+  });
+}
+
 async function sendDailyLeadSummary({ adminEmail, conferenceId, conferenceName, totalLeads, hotLeads, date }) {
   await sendEmail({
     to: adminEmail,
@@ -415,6 +441,7 @@ async function sendShiftCalendarInvite({ shiftId, staffEmail, staffName, confere
 module.exports = {
   sendEmail,
   sendConferenceAssignmentAlert,
+  sendInviteResendEmail,
   sendDailyLeadSummary,
   sendTaskAssignmentAlert,
   sendDiscussionCommentAlert,
