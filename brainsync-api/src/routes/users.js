@@ -330,6 +330,66 @@ router.post('/:id/resend-invite', requireRole('admin'), async (req, res, next) =
   } catch (err) { next(err); }
 });
 
+// POST /api/users/:id/invite-link — admin: fetch the raw invite/
+// set-password link for a still-'invited' user, without sending an
+// email at all. Stopgap for the Resend/Supabase-email deliverability
+// issues we've hit — lets an admin copy the link and hand it to the
+// person directly (Slack, text, in person) when email keeps landing
+// nowhere. Uses generateLink() rather than inviteUserByEmail(), since
+// generateLink() returns the action_link and does NOT trigger Supabase's
+// own mailer — see GoTrueAdminApi's docstring ("Generates email links
+// ... to be sent via a custom email provider").
+router.post('/:id/invite-link', requireRole('admin'), async (req, res, next) => {
+  try {
+    const { data: targetUser, error: targetError } = await req.userClient
+      .from('users')
+      .select('id, email, full_name, role, status, organization_id')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (targetError) throw targetError;
+    if (!targetUser) return res.status(404).json({ error: 'User not found' });
+    if (targetUser.organization_id !== req.user.organization_id) {
+      return res.status(403).json({ error: 'That user is not in your organization' });
+    }
+    if (targetUser.status === 'active') {
+      return res.status(400).json({
+        error: 'This user has already completed setup. If they need help signing in, use a password reset instead.',
+      });
+    }
+
+    const { data: org, error: orgError } = await req.userClient
+      .from('organizations')
+      .select('name')
+      .eq('id', req.user.organization_id)
+      .single();
+
+    if (orgError) throw orgError;
+
+    const redirectTo = targetUser.role === 'lead_capture'
+      ? 'https://app.getexpopilot.com/set-password'
+      : 'https://admin.getexpopilot.com/set-password';
+
+    const { data, error: linkError } = await supabase.auth.admin.generateLink({
+      type: 'invite',
+      email: targetUser.email,
+      options: {
+        data: {
+          full_name: targetUser.full_name,
+          organization_id: targetUser.organization_id,
+          role: targetUser.role,
+          org_name: org.name,
+        },
+        redirectTo,
+      },
+    });
+
+    if (linkError) throw linkError;
+
+    res.json({ link: data.properties.action_link });
+  } catch (err) { next(err); }
+});
+
 // PATCH /api/users/:id/role — admin: change a role. Switched to
 // req.userClient so RLS ("users: admin write") only allows this to
 // affect a user in the caller's own organization.
