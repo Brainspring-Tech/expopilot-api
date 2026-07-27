@@ -2,7 +2,7 @@ const express  = require('express');
 const router   = express.Router();
 const supabase = require('../services/supabase');
 const { requireAuth, requireRole, blockApiKey } = require('../middleware/auth');
-const { sendConferenceAssignmentAlert, sendInviteResendEmail } = require('../services/email');
+const { sendConferenceAssignmentAlert, sendInviteEmail } = require('../services/email');
 const { notifyIfEnabled } = require('../services/notifications');
 
 router.use(requireAuth);
@@ -175,11 +175,16 @@ router.get('/', requireRole('admin'), async (req, res, next) => {
 });
 
 // POST /api/users — admin: invite a new user into the caller's
-// organization. No password is set here — Supabase sends the branded
-// "Invite user" email (custom SMTP via Resend) with a link that lets the
-// invitee set their own password on either the admin console or PWA's
-// set-password page, depending on role. See POST /:id/resend-invite for
-// re-sending an expired/unactioned invite.
+// organization. No password is set here — the invitee gets an email with
+// a link that lets them set their own password on either the admin
+// console or PWA's set-password page, depending on role.
+//
+// The link is minted with generateLink({ type: 'invite' }), which creates
+// the auth user but sends NO email itself, and we send the email through
+// the Gmail pipeline (sendInviteEmail) — NOT inviteUserByEmail, whose
+// Supabase/Resend-backed mailer has had repeated deliverability failures
+// (corporate quarantine, noreply spam-scoring). This is the same reliable
+// path the resend endpoint below uses. See POST /:id/resend-invite.
 router.post('/', requireRole('admin'), async (req, res, next) => {
   try {
     const { email, full_name, role } = req.body;
@@ -240,21 +245,30 @@ router.post('/', requireRole('admin'), async (req, res, next) => {
     // The handle_new_user() trigger reads full_name/organization_id from
     // this metadata to set up the new profile row (status defaults to
     // 'invited' via the column default — see migration). role/org_name
-    // are included purely so the "Invite user" email template can
-    // reference {{ .Data.role }} / {{ .Data.org_name }} for the
-    // role-conditional home-screen-install section.
-    const { data: authData, error: authError } = await supabase.auth.admin.inviteUserByEmail(email, {
-      data: {
-        full_name,
-        organization_id: req.user.organization_id,
-        role: assignedRole,
-        org_name: org.name,
+    // are carried through as user metadata for parity with the prior
+    // inviteUserByEmail() flow.
+    //
+    // generateLink({ type: 'invite' }) creates the auth user exactly like
+    // inviteUserByEmail() would (firing handle_new_user()), but returns
+    // the action link WITHOUT sending any email — so we send it ourselves
+    // through the Gmail pipeline below.
+    const { data: authData, error: authError } = await supabase.auth.admin.generateLink({
+      type: 'invite',
+      email,
+      options: {
+        data: {
+          full_name,
+          organization_id: req.user.organization_id,
+          role: assignedRole,
+          org_name: org.name,
+        },
+        redirectTo,
       },
-      redirectTo,
     });
 
     if (authError) {
-      if (authError.message?.includes('already been registered')) {
+      if (authError.message?.includes('already been registered') ||
+          authError.message?.includes('already registered')) {
         return res.status(409).json({ error: 'A user with this email already exists' });
       }
       throw authError;
@@ -274,6 +288,23 @@ router.post('/', requireRole('admin'), async (req, res, next) => {
       .single();
 
     if (profileError) throw profileError;
+
+    // Send the invite through the Gmail pipeline (see comment on the
+    // handler). Deliberately after the profile fetch so a mail hiccup
+    // can't 500 a request that already created the user — surfacing the
+    // link failure would just make the admin retry and hit the "already
+    // exists" 409. Resend covers the rare case where this send fails.
+    try {
+      await sendInviteEmail({
+        toEmail: email,
+        fullName: full_name,
+        orgName: org.name,
+        actionLink: authData.properties.action_link,
+        isLeadCapture: assignedRole === 'lead_capture',
+      });
+    } catch (mailErr) {
+      console.error('[users] invite email send failed', { email, err: mailErr?.message });
+    }
 
     res.status(201).json(profile);
   } catch (err) { next(err); }
@@ -335,7 +366,7 @@ router.post('/:id/resend-invite', requireRole('admin'), async (req, res, next) =
     // through the Gmail pipeline every other notification already uses,
     // rather than Supabase's Resend-backed mailer, since that's the
     // piece we've had repeated deliverability trouble with.
-    await sendInviteResendEmail({
+    await sendInviteEmail({
       toEmail: targetUser.email,
       fullName: targetUser.full_name,
       orgName: org.name,
